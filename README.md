@@ -14,6 +14,12 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
 
+## Version 0.1.1
+
+- Reworked the renderer order to match the approved app/game path more closely: CRT beam first, RGB emitter mask/scanline second, screen-space bloom after that.
+- Transparent/backdrop pixels are no longer treated as lit emitters, which removes the odd colored border around sprites.
+- Glow now comes from the masked/beam output instead of a source-space shortcut, so the preview keeps the dark matrix while still bleeding light into the backdrop.
+
 ## Commands
 
 After installing and restarting Aseprite:
@@ -76,7 +82,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.0
+git tag v0.1.1
 git push origin main --tags
 ```
 

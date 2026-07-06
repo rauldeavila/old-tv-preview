@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.0"
+local EXTENSION_VERSION = "0.1.1"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
@@ -213,6 +213,15 @@ end
 local function smoothstep(edge0, edge1, value)
   local t = saturate((value - edge0) / (edge1 - edge0))
   return t * t * (3.0 - 2.0 * t)
+end
+
+local function smoothReverse(edge0, edge1, value)
+  local t = saturate((edge0 - value) / math.max(edge0 - edge1, 0.00001))
+  return t * t * (3.0 - 2.0 * t)
+end
+
+local function fract(value)
+  return value - math.floor(value)
 end
 
 local function hash01(x, y, seed)
@@ -506,6 +515,19 @@ local function backgroundSample(preset)
   }
 end
 
+local function aboveBackground(sample, preset)
+  local r = math.max(sample.r - preset.backgroundRed, 0.0)
+  local g = math.max(sample.g - preset.backgroundGreen, 0.0)
+  local b = math.max(sample.b - preset.backgroundBlue, 0.0)
+  return {
+    r = r,
+    g = g,
+    b = b,
+    l = luminance(r, g, b),
+    peak = math.max(r, math.max(g, b))
+  }
+end
+
 local function sampleRows(rows, width, height, x, y, preset)
   if y < 0 or y > height - 1 or x < 0 or x > width - 1 then
     return backgroundSample(preset)
@@ -614,102 +636,40 @@ local function buildSignalRows(rows, width, height, preset)
   return signal
 end
 
-local function sampleSignal(signalRows, width, height, x, y, preset)
-  if y < 0 or y > height - 1 or x < 0 or x > width - 1 then
-    return backgroundSample(preset)
-  end
-
-  local x0 = math.floor(x)
-  local y0 = math.floor(y)
-  local x1 = math.min(width - 1, x0 + 1)
-  local y1 = math.min(height - 1, y0 + 1)
-  local tx = x - x0
-  local ty = y - y0
-  local a = signalRows[y0 + 1][x0 + 1]
-  local b = signalRows[y0 + 1][x1 + 1]
-  local c = signalRows[y1 + 1][x0 + 1]
-  local d = signalRows[y1 + 1][x1 + 1]
-
-  local topR = lerp(a.r, b.r, tx)
-  local topG = lerp(a.g, b.g, tx)
-  local topB = lerp(a.b, b.b, tx)
-  local botR = lerp(c.r, d.r, tx)
-  local botG = lerp(c.g, d.g, tx)
-  local botB = lerp(c.b, d.b, tx)
-
-  return {
-    r = lerp(topR, botR, ty),
-    g = lerp(topG, botG, ty),
-    b = lerp(topB, botB, ty),
-    a = lerp(lerp(a.a, b.a, tx), lerp(c.a, d.a, tx), ty),
-    l = lerp(lerp(a.l, b.l, tx), lerp(c.l, d.l, tx), ty)
-  }
-end
-
-local function buildGlowRows(signalRows, width, height, preset, scale)
-  local glow = {}
-  local radius = math.max(1, math.min(5, math.ceil(16.0 / math.max(scale, 1))))
-  local sigma = math.max(0.75, radius * 0.62)
-
-  for y = 0, height - 1 do
-    local row = {}
-    for x = 0, width - 1 do
-      local r = 0.0
-      local g = 0.0
-      local b = 0.0
-      local weightSum = 0.0
-
-      for yy = -radius, radius do
-        for xx = -radius, radius do
-          local sample = sampleSignal(signalRows, width, height, x + xx, y + yy, preset)
-          local bright = math.max(0.0, sample.l - preset.bloomThreshold)
-          if bright > 0.0 then
-            local dist2 = (xx * xx) + (yy * yy)
-            local weight = math.exp(-dist2 / (2.0 * sigma * sigma)) * bright
-            r = r + sample.r * weight
-            g = g + sample.g * weight
-            b = b + sample.b * weight
-            weightSum = weightSum + weight
-          end
-        end
-      end
-
-      if weightSum > 0.0 then
-        r = r / weightSum
-        g = g / weightSum
-        b = b / weightSum
-      end
-
-      row[x + 1] = { r = r, g = g, b = b, l = luminance(r, g, b) }
-    end
-    glow[y + 1] = row
-  end
-
-  return glow
-end
-
 local function cellMask(localX, localY, preset)
-  local ax = math.max(0.05, preset.cellApertureX)
-  local ay = math.max(0.05, preset.cellApertureY)
-  local roundness = math.max(0.2, preset.cellRoundness)
-  local dx = math.abs(localX - 0.5) / (0.5 * ax)
-  local dy = math.abs(localY - 0.5) / (0.5 * ay)
-  local d = ((dx ^ roundness) + (dy ^ roundness)) ^ (1.0 / roundness)
-  return 1.0 - smoothstep(0.82, 1.0, d)
+  local distX = math.abs(localX - 0.5) * 2.0
+  local distY = math.abs(localY - 0.5) * 2.0
+  local normX = distX / math.max(preset.cellApertureX, 0.001)
+  local normY = distY / math.max(preset.cellApertureY, 0.001)
+  local power = math.max(preset.cellRoundness * 2.0, 0.35)
+  local shape = (normX ^ power) + (normY ^ power)
+  return smoothReverse(1.18, 0.72, shape)
 end
 
-local function subpixelMask(localX, localY, centerX, preset)
-  local sigmaX = 0.038 + (0.110 * preset.subpixelApertureX)
-  local sigmaY = 0.22 + (0.20 * preset.subpixelApertureY)
-  local dx = (localX - centerX) / sigmaX
-  local dy = (localY - 0.5) / sigmaY
-  return math.exp(-0.5 * ((dx * dx) + (dy * dy)))
+local function subpixelStripMask(localX, localY, preset)
+  local sub = localX * 3.0
+  local channelIndex = math.floor(sub)
+  local channelCenter = (channelIndex + 0.5) / 3.0
+  local subDistance = math.abs(localX - channelCenter) * 3.0
+  local apertureX = smoothstep(1.0, preset.subpixelApertureX, subDistance) ^ 1.10
+  local apertureY = smoothstep(1.0, preset.subpixelApertureY, math.abs(localY - 0.5) * 2.0) ^ 1.15
+  local aperture = apertureX * apertureY * preset.maskBrightness
+
+  if channelIndex < 0.5 then
+    return aperture, 0.0, 0.0
+  elseif channelIndex < 1.5 then
+    return 0.0, aperture, 0.0
+  end
+
+  return 0.0, 0.0, aperture
 end
 
-local function scanlineMultiplier(screenY, preset)
-  local wave = (math.sin((screenY * 6.28318530718) / math.max(1.0, preset.scanlinePitch)) + 1.0) * 0.5
-  local dip = (wave ^ 1.7) * preset.scanlineStrength * 0.68
-  return clamp(1.0 - dip, 0.20, 1.25)
+local function scanlineOpen(screenY, brightness, preset)
+  local pitch = math.max(preset.scanlinePitch, 1.0)
+  local scanLocal = math.abs(fract(screenY / pitch) - 0.5) * 2.0
+  local thickness = lerp(0.64, 1.18, saturate(brightness))
+  local open = smoothReverse(1.0, 0.0, scanLocal / math.max(thickness, 0.001))
+  return lerp(1.0, open, saturate(preset.scanlineStrength))
 end
 
 local function backdropColor(screenX, screenY, outWidth, outHeight, preset)
@@ -737,17 +697,30 @@ local function backdropColor(screenX, screenY, outWidth, outHeight, preset)
 end
 
 local function gradePixel(r, g, b, screenX, screenY, outWidth, outHeight, preset)
-  local l = luminance(r, g, b)
-  r = lerp(l, r, preset.finalSaturation)
-  g = lerp(l, g, preset.finalSaturation)
-  b = lerp(l, b, preset.finalSaturation)
+  local uvX = (screenX + 0.5) / outWidth
+  local uvY = (screenY + 0.5) / outHeight
+  local centeredX = uvX * 2.0 - 1.0
+  local centeredY = uvY * 2.0 - 1.0
+  local vignette = 1.0 - preset.vignette * smoothstep(0.32, 1.22, (centeredX * centeredX) + (centeredY * centeredY))
+  r = r * vignette
+  g = g * vignette
+  b = b * vignette
 
-  r = r + preset.temperature * 0.055
-  b = b - preset.temperature * 0.045
+  r = r + 0.010
+  g = g + 0.010
+  b = b + 0.010
+
+  r = r * (1.0 + preset.temperature)
+  b = b * (1.0 - preset.temperature)
 
   r = ((r - 0.5) * preset.contrast) + 0.5
   g = ((g - 0.5) * preset.contrast) + 0.5
   b = ((b - 0.5) * preset.contrast) + 0.5
+
+  local l = luminance(r, g, b)
+  r = lerp(l, r, preset.finalSaturation)
+  g = lerp(l, g, preset.finalSaturation)
+  b = lerp(l, b, preset.finalSaturation)
 
   local invGamma = 1.0 / math.max(0.2, preset.gamma)
   r = saturate(r) ^ invGamma
@@ -792,63 +765,282 @@ local function renderRawNearest(sourceRows, width, height, scale, margin, preset
   return image
 end
 
-local function renderCrtImage(signalRows, glowRows, width, height, scale, margin, preset)
+local function matrixColor(preset)
+  local amount = 1.0 - clamp(preset.cellMatrixDarkness, 0.0, 1.0)
+  return preset.backgroundRed * amount, preset.backgroundGreen * amount, preset.backgroundBlue * amount
+end
+
+local function sourceOrBackgroundSignal(signalRows, width, height, sourceX, sourceY, preset)
+  if sourceX < 0 or sourceY < 0 or sourceX >= width or sourceY >= height then
+    return backgroundSample(preset)
+  end
+
+  return signalRows[sourceY + 1][sourceX + 1]
+end
+
+local function blendedSignalCell(signalRows, width, height, sourceX, sourceY, preset)
+  local nearestX = math.floor(sourceX)
+  local nearestY = math.floor(sourceY)
+  local center = sourceOrBackgroundSignal(signalRows, width, height, nearestX, nearestY, preset)
+  local bleed = clamp(preset.neighborBleed, 0.0, 1.0)
+  if bleed <= 0.0001 then
+    return center
+  end
+
+  local r = 0.0
+  local g = 0.0
+  local b = 0.0
+  local weightSum = 0.0
+  for yy = -1, 1 do
+    for xx = -1, 1 do
+      local sx = nearestX + xx
+      local sy = nearestY + yy
+      local sample = sourceOrBackgroundSignal(signalRows, width, height, sx, sy, preset)
+      local dx = sourceX - (sx + 0.5)
+      local dy = sourceY - (sy + 0.5)
+      local weight = math.exp(-((dx * dx) + (dy * dy)) * 2.4)
+      r = r + sample.r * weight
+      g = g + sample.g * weight
+      b = b + sample.b * weight
+      weightSum = weightSum + weight
+    end
+  end
+
+  weightSum = math.max(weightSum, 0.00001)
+  r = lerp(center.r, r / weightSum, bleed)
+  g = lerp(center.g, g / weightSum, bleed)
+  b = lerp(center.b, b / weightSum, bleed)
+  return { r = r, g = g, b = b, a = center.a, l = luminance(r, g, b) }
+end
+
+local function emitterBeamAt(signalRows, width, height, sourceX, sourceY, preset)
+  local cellLocalX = fract(sourceX)
+  local cellLocalY = fract(sourceY)
+  local sourceColor = blendedSignalCell(signalRows, width, height, sourceX, sourceY, preset)
+  local above = aboveBackground(sourceColor, preset)
+  local sourceSignal = math.max(above.peak, above.l)
+  local active = smoothstep(preset.activeThreshold, preset.activeThreshold + 0.16, sourceSignal)
+  if active <= 0.0 then
+    return { r = 0.0, g = 0.0, b = 0.0, l = 0.0 }
+  end
+
+  local aperture = cellMask(cellLocalX, cellLocalY, preset)
+  local brightness = saturate(sourceColor.l * 1.22)
+  local gain = 0.72 + brightness * 0.38
+  local scale = active * aperture * gain
+  local r = sourceColor.r * scale
+  local g = sourceColor.g * scale
+  local b = sourceColor.b * scale
+  return { r = r, g = g, b = b, l = luminance(r, g, b) }
+end
+
+local function sampleColorRows(rows, width, height, x, y)
+  local clampedX = clamp(x, 0.0, width - 1)
+  local clampedY = clamp(y, 0.0, height - 1)
+  local x0 = math.floor(clampedX)
+  local y0 = math.floor(clampedY)
+  local x1 = math.min(width - 1, x0 + 1)
+  local y1 = math.min(height - 1, y0 + 1)
+  local tx = clampedX - x0
+  local ty = clampedY - y0
+  local a = rows[y0 + 1][x0 + 1]
+  local b = rows[y0 + 1][x1 + 1]
+  local c = rows[y1 + 1][x0 + 1]
+  local d = rows[y1 + 1][x1 + 1]
+
+  local r = lerp(lerp(a.r, b.r, tx), lerp(c.r, d.r, tx), ty)
+  local g = lerp(lerp(a.g, b.g, tx), lerp(c.g, d.g, tx), ty)
+  local blue = lerp(lerp(a.b, b.b, tx), lerp(c.b, d.b, tx), ty)
+  return { r = r, g = g, b = blue, l = luminance(r, g, blue) }
+end
+
+local function buildBloomExtractRows(rows, width, height, preset)
+  local extractRows = {}
+  for y = 0, height - 1 do
+    local outRow = {}
+    for x = 0, width - 1 do
+      local color = rows[y + 1][x + 1]
+      local brightness = color.l or luminance(color.r, color.g, color.b)
+      local extract = smoothstep(preset.bloomThreshold, preset.bloomThreshold + 0.45, brightness)
+      local minColor = math.min(color.r, math.min(color.g, color.b))
+      local whiteBoost = preset.whiteBloom * smoothstep(0.55, 1.0, minColor)
+      local r = color.r * extract * (preset.redBloom + whiteBoost)
+      local g = color.g * extract * (preset.greenBloom + whiteBoost)
+      local b = color.b * extract * (preset.blueBloom + whiteBoost)
+      outRow[x + 1] = { r = r, g = g, b = b, l = luminance(r, g, b) }
+    end
+    extractRows[y + 1] = outRow
+  end
+  return extractRows
+end
+
+local function blurRows(rows, width, height, radius, horizontal)
+  local outRows = {}
+  local safeRadius = math.max(radius, 0.001)
+  for y = 0, height - 1 do
+    local outRow = {}
+    for x = 0, width - 1 do
+      local r = 0.0
+      local g = 0.0
+      local b = 0.0
+      local weightSum = 0.0
+      for tap = -7, 7 do
+        local dist = tap
+        local weight = math.exp(-(dist * dist) / 18.0)
+        local offset = dist * safeRadius / 7.0
+        local sample
+        if horizontal then
+          sample = sampleColorRows(rows, width, height, x + offset, y)
+        else
+          sample = sampleColorRows(rows, width, height, x, y + offset)
+        end
+        r = r + sample.r * weight
+        g = g + sample.g * weight
+        b = b + sample.b * weight
+        weightSum = weightSum + weight
+      end
+      weightSum = math.max(weightSum, 0.00001)
+      r = r / weightSum
+      g = g / weightSum
+      b = b / weightSum
+      outRow[x + 1] = { r = r, g = g, b = b, l = luminance(r, g, b) }
+    end
+    outRows[y + 1] = outRow
+  end
+  return outRows
+end
+
+local function applyBlackFadePixel(r, g, b, preset)
+  local amount = clamp(preset.blackFade, 0.0, 1.0)
+  if amount <= 0.0001 then
+    return r, g, b
+  end
+
+  local darkWeight = (1.0 - smoothstep(0.02, 0.48, luminance(r, g, b))) ^ 1.35
+  local warm = clamp(preset.blackWarmth, 0.0, 1.0)
+  local targetR = lerp(0.035, 0.105, warm)
+  local targetG = lerp(0.038, 0.098, warm)
+  local targetB = lerp(0.036, 0.058, warm)
+  local mixAmount = amount * darkWeight
+  return
+    lerp(r, math.max(r, targetR), mixAmount),
+    lerp(g, math.max(g, targetG), mixAmount),
+    lerp(b, math.max(b, targetB), mixAmount)
+end
+
+local function applyBackdropArtifactsPixel(r, g, b, screenX, screenY, preset)
+  local noiseAmount = clamp(preset.backdropNoise, 0.0, 1.0)
+  local stripeAmount = clamp(preset.backdropStrips, 0.0, 1.0)
+  if noiseAmount <= 0.0001 and stripeAmount <= 0.0001 then
+    return r, g, b
+  end
+
+  local darkWeight = (1.0 - smoothstep(0.025, 0.44, luminance(r, g, b))) ^ 1.55
+  if darkWeight <= 0.0001 then
+    return r, g, b
+  end
+
+  local fine = hash01(math.floor(screenX), math.floor(screenY), 19.0) - 0.5
+  local rowNoise = hash01(math.floor(screenY * 0.55), 41.0, 3.0) - 0.5
+  local blotch = hash01(math.floor(screenX / 10.0), math.floor(screenY / 5.0), 3.0) - 0.5
+  local noise = fine * 0.56 + rowNoise * 0.24 + blotch * 0.20
+  r = r + noise * noiseAmount * darkWeight * 0.052
+  g = g + noise * noiseAmount * darkWeight * 0.052
+  b = b + noise * noiseAmount * darkWeight * 0.052
+
+  local pitch = math.max(12.0 / math.max(preset.stripScale, 0.25), 1.0)
+  local phase = fract((screenX + 0.4) / pitch)
+  local red = smoothReverse(0.30, 0.0, math.abs(phase - 0.17))
+  local green = smoothReverse(0.30, 0.0, math.abs(phase - 0.50))
+  local blue = smoothReverse(0.30, 0.0, math.abs(phase - 0.83))
+  local columnPeak = math.max(red, math.max(green, blue))
+  red = lerp(columnPeak, red, 0.62)
+  green = lerp(columnPeak, green, 0.62)
+  blue = lerp(columnPeak, blue, 0.62)
+
+  local scan = 0.42 + 0.58 * smoothReverse(1.0, 0.0, math.abs(fract(screenY / math.max(preset.scanlinePitch, 1.0)) - 0.5) * 2.0)
+  local flutter = 0.58 + 0.42 * math.sin(screenX * 6.2831853 / pitch + math.sin(screenY * 0.027) * 0.75)
+  local broadBand = hash01(math.floor(screenY / 18.0), 73.0, 0.7) - 0.5
+  r = r + (red * scan * flutter * 0.032 + broadBand * 0.020) * stripeAmount * darkWeight
+  g = g + (green * scan * flutter * 0.032 + broadBand * 0.020) * stripeAmount * darkWeight
+  b = b + (blue * scan * flutter * 0.032 + broadBand * 0.020) * stripeAmount * darkWeight
+  return r, g, b
+end
+
+local function renderCrtImage(signalRows, width, height, scale, margin, preset)
   local outWidth = (width * scale) + (margin * 2)
   local outHeight = (height * scale) + (margin * 2)
+  local beamRows = {}
+  local maskedRows = {}
+
+  local matrixR, matrixG, matrixB = matrixColor(preset)
+  for y = 0, outHeight - 1 do
+    local beamRow = {}
+    local maskedRow = {}
+    for x = 0, outWidth - 1 do
+      local sourceX = (x + 1.5 - margin) / scale
+      local sourceY = (y + 1.5 - margin) / scale
+      local redBeam = emitterBeamAt(signalRows, width, height, sourceX + preset.redOffsetX / scale, sourceY + preset.redOffsetY / scale, preset)
+      local greenBeam = emitterBeamAt(signalRows, width, height, sourceX, sourceY, preset)
+      local blueBeam = emitterBeamAt(signalRows, width, height, sourceX + preset.blueOffsetX / scale, sourceY + preset.blueOffsetY / scale, preset)
+      local emissionR = redBeam.r
+      local emissionG = greenBeam.g
+      local emissionB = blueBeam.b
+      local brightness = luminance(emissionR, emissionG, emissionB)
+      local localX = fract(sourceX)
+      local localY = fract(sourceY)
+      local redMask, greenMask, blueMask = subpixelStripMask(localX, localY, preset)
+      local scan = scanlineOpen(y, brightness, preset)
+      local r = matrixR + emissionR * redMask * scan
+      local g = matrixG + emissionG * greenMask * scan
+      local b = matrixB + emissionB * blueMask * scan
+
+      beamRow[x + 1] = { r = emissionR, g = emissionG, b = emissionB, l = brightness }
+      maskedRow[x + 1] = { r = r, g = g, b = b, l = luminance(r, g, b) }
+    end
+    beamRows[y + 1] = beamRow
+    maskedRows[y + 1] = maskedRow
+  end
+
+  local smallExtract = buildBloomExtractRows(maskedRows, outWidth, outHeight, preset)
+  local largeExtract = buildBloomExtractRows(beamRows, outWidth, outHeight, preset)
+  local smallBlur = blurRows(blurRows(smallExtract, outWidth, outHeight, preset.smallGlow * 5.5, true), outWidth, outHeight, preset.smallGlow * 5.5, false)
+  local largeBlur = blurRows(blurRows(largeExtract, outWidth, outHeight, math.max(1.0, preset.largeGlow * 30.0), true), outWidth, outHeight, math.max(1.0, preset.largeGlow * 30.0), false)
   local image = Image(outWidth, outHeight, ColorMode.RGB)
 
   for y = 0, outHeight - 1 do
     for x = 0, outWidth - 1 do
-      local r, g, b = backdropColor(x, y, outWidth, outHeight, preset)
-      local sourceX = (x - margin) / scale
-      local sourceY = (y - margin) / scale
+      local masked = maskedRows[y + 1][x + 1]
+      local small = smallBlur[y + 1][x + 1]
+      local large = largeBlur[y + 1][x + 1]
+      local r = masked.r
+      local g = masked.g
+      local b = masked.b
+      local litR = math.max(r - matrixR, 0.0)
+      local litG = math.max(g - matrixG, 0.0)
+      local litB = math.max(b - matrixB, 0.0)
+      local lit = smoothstep(0.02, 0.30, luminance(litR, litG, litB))
+      local glowThroughMatrix = lerp(1.0 - clamp(preset.matrixGlowResistance, 0.0, 1.0), 1.0, lit)
+      local largeMix = lerp(glowThroughMatrix, 1.0, 0.12)
+      local halationMix = lerp(glowThroughMatrix, 1.0, 0.18)
+      local smallStrength = preset.smallGlow * 1.18
+      local largeStrength = preset.largeGlow * 1.14
+      local halationStrength = preset.halationStrength * 1.12
+      local redGlowScale = 0.94
 
-      if sourceX >= 0 and sourceX < width and sourceY >= 0 and sourceY < height then
-        local cellX = math.floor(sourceX)
-        local cellY = math.floor(sourceY)
-        local localX = sourceX - cellX
-        local localY = sourceY - cellY
-
-        local redSample = sampleSignal(signalRows, width, height, sourceX - preset.redOffsetX / scale, sourceY - preset.redOffsetY / scale, preset)
-        local greenSample = sampleSignal(signalRows, width, height, sourceX, sourceY, preset)
-        local blueSample = sampleSignal(signalRows, width, height, sourceX - preset.blueOffsetX / scale, sourceY - preset.blueOffsetY / scale, preset)
-        local sourceLum = luminance(redSample.r, greenSample.g, blueSample.b)
-
-        local aperture = cellMask(localX, localY, preset)
-        local active = smoothstep(preset.activeThreshold, preset.activeThreshold + 0.08, sourceLum) * aperture
-        local scan = scanlineMultiplier(y, preset)
-        local matrixResistance = 1.0 - preset.matrixGlowResistance * (1.0 - aperture)
-
-        if active > 0.0 then
-          local redMask = subpixelMask(localX, localY, 0.22, preset) * active
-          local greenMask = subpixelMask(localX, localY, 0.50, preset) * active
-          local blueMask = subpixelMask(localX, localY, 0.78, preset) * active
-          local maskScale = scan * preset.maskBrightness * 0.72
-          local beamMask = active * aperture * scan * (0.34 + sourceLum * 0.30)
-
-          local emitR = redSample.r * redMask * maskScale
-          local emitG = greenSample.g * greenMask * maskScale
-          local emitB = blueSample.b * blueMask * maskScale
-
-          local whiteBoost = math.max(0.0, sourceLum - preset.bloomThreshold) * preset.whiteBloom
-          r = r + redSample.r * beamMask + emitR + (redSample.r * whiteBoost * aperture * preset.smallGlow * 0.34)
-          g = g + greenSample.g * beamMask + emitG + (greenSample.g * whiteBoost * aperture * preset.smallGlow * 0.34)
-          b = b + blueSample.b * beamMask + emitB + (blueSample.b * whiteBoost * aperture * preset.smallGlow * 0.34)
-        end
-
-        local glowCell = glowRows[cellY + 1][cellX + 1]
-        local glowAmount = preset.largeGlow * 0.24 * matrixResistance
-        r = r + glowCell.r * glowAmount * preset.redBloom
-        g = g + glowCell.g * glowAmount * preset.greenBloom
-        b = b + glowCell.b * glowAmount * preset.blueBloom
-
-        local halation = math.max(0.0, glowCell.l - preset.bloomThreshold) * preset.halationStrength * 0.18
-        r = r + halation * preset.redBloom
-        g = g + halation * preset.greenBloom
-        b = b + halation * preset.blueBloom
-      end
+      r = r + small.r * smallStrength * redGlowScale * glowThroughMatrix
+      g = g + small.g * smallStrength * glowThroughMatrix
+      b = b + small.b * smallStrength * glowThroughMatrix
+      r = r + large.r * largeStrength * redGlowScale * largeMix
+      g = g + large.g * largeStrength * largeMix
+      b = b + large.b * largeStrength * largeMix
+      r = r + large.r * halationStrength * redGlowScale * 0.90 * halationMix
+      g = g + large.g * halationStrength * 0.96 * halationMix
+      b = b + large.b * halationStrength * halationMix
 
       r, g, b = gradePixel(r, g, b, x, y, outWidth, outHeight, preset)
+      r, g, b = applyBlackFadePixel(r, g, b, preset)
+      r, g, b = applyBackdropArtifactsPixel(r, g, b, x, y, preset)
       writeRgb(image, x, y, r, g, b)
     end
   end
@@ -943,8 +1135,7 @@ local function renderPreviewFromPreferences(comparisonOverride)
   app.transaction("Render Old TV Preview", function()
     local sourceRows = readSourceRows(sourceImage, preset)
     local signalRows = buildSignalRows(sourceRows, sourceImage.width, sourceImage.height, preset)
-    local glowRows = buildGlowRows(signalRows, sourceImage.width, sourceImage.height, preset, scale)
-    local crtImage = renderCrtImage(signalRows, glowRows, sourceImage.width, sourceImage.height, scale, margin, preset)
+    local crtImage = renderCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
 
     if comparison then
       local rawImage = renderRawNearest(sourceRows, sourceImage.width, sourceImage.height, scale, margin, preset)
