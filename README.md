@@ -10,9 +10,16 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
 - Includes `Reference Match` and `Color Leak` preset variants.
 - Optional side-by-side comparison with nearest-neighbor raw upscale.
+- F7 CRT preview window that draws the filtered image without creating a new sprite.
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.1.2
+
+- Added `Old TV Preview: CRT Preview Window`.
+- Bound F7 to the CRT preview window, replacing the native Preview shortcut when the extension keymap is active.
+- The preview window uses Aseprite's Lua canvas API, because extensions cannot replace the native Preview window render pipeline directly.
 
 ## Version 0.1.1
 
@@ -25,11 +32,13 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 After installing and restarting Aseprite:
 
 - `View > Old TV Preview: Render...`
+- `View > Old TV Preview: CRT Preview Window`
 - `View > Old TV Preview: Quick Render`
 - `View > Old TV Preview: Check for Updates...`
 
 Default shortcut:
 
+- CRT Preview Window: `F7`
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
@@ -82,7 +91,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.1
+git tag v0.1.2
 git push origin main --tags
 ```
 

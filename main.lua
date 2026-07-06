@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.1"
+local EXTENSION_VERSION = "0.1.2"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
@@ -7,8 +7,15 @@ local MIN_SCALE = 2
 local MAX_SCALE = 32
 local MAX_RENDER_PIXELS = 2300000
 local COMPARISON_GAP = 18
+local QUICK_PREVIEW_MAX_WIDTH = 720
+local QUICK_PREVIEW_MAX_HEIGHT = 720
+local QUICK_PREVIEW_MIN_WIDTH = 240
+local QUICK_PREVIEW_MIN_HEIGHT = 180
 
 local pluginRef = nil
+local quickPreviewDialog = nil
+local quickPreviewImage = nil
+local quickPreviewStatus = ""
 
 local pc = app.pixelColor
 
@@ -1085,16 +1092,12 @@ local function createSpriteFromImage(image, name)
   app.refresh()
 end
 
-local function renderPreviewFromPreferences(comparisonOverride)
+local function renderPreviewImageFromPreferences(comparisonOverride)
   ensurePreferences()
 
   local sprite = app.sprite
   if not sprite then
-    app.alert {
-      title = "Old TV Preview",
-      text = "Open a sprite before rendering an Old TV preview."
-    }
-    return
+    return nil, "Open a sprite before rendering an Old TV preview."
   end
 
   local prefs = pluginRef.preferences
@@ -1108,11 +1111,7 @@ local function renderPreviewFromPreferences(comparisonOverride)
 
   local sourceImage, _, sourceError = captureSource(sprite, prefs.cropTransparentBounds == true)
   if not sourceImage then
-    app.alert {
-      title = "Old TV Preview",
-      text = sourceError or "Could not capture the current frame."
-    }
-    return
+    return nil, sourceError or "Could not capture the current frame."
   end
 
   local outWidth = (sourceImage.width * scale) + (margin * 2)
@@ -1123,27 +1122,206 @@ local function renderPreviewFromPreferences(comparisonOverride)
   end
 
   if projectedPixels > MAX_RENDER_PIXELS then
+    return nil, "This preview would render about " ..
+      tostring(math.floor(projectedPixels)) ..
+      " pixels. Lower the scale or enable transparent-bounds crop."
+  end
+
+  local sourceRows = readSourceRows(sourceImage, preset)
+  local signalRows = buildSignalRows(sourceRows, sourceImage.width, sourceImage.height, preset)
+  local crtImage = renderCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
+
+  if comparison then
+    local rawImage = renderRawNearest(sourceRows, sourceImage.width, sourceImage.height, scale, margin, preset)
+    crtImage = composeComparison(rawImage, crtImage, preset)
+  end
+
+  local status = preset.name .. " | " .. tostring(crtImage.width) .. "x" .. tostring(crtImage.height) .. " | scale " .. tostring(scale)
+  return crtImage, nil, status
+end
+
+local function renderPreviewFromPreferences(comparisonOverride)
+  ensurePreferences()
+
+  local sourceSprite = app.sprite
+  local comparison = comparisonOverride
+  if comparison == nil then
+    comparison = pluginRef.preferences.comparison == true
+  end
+  local preset = presetById(pluginRef.preferences.presetId)
+
+  app.transaction("Render Old TV Preview", function()
+    local crtImage, err = renderPreviewImageFromPreferences(comparisonOverride)
+    if not crtImage then
+      app.alert {
+        title = "Old TV Preview",
+        text = err or "Could not render the Old TV preview."
+      }
+      return
+    end
+
+    createSpriteFromImage(crtImage, previewName(sourceSprite, preset, comparison))
+  end)
+end
+
+local showRenderDialog
+
+local function quickPreviewCanvasSize(image)
+  if not image then
+    return QUICK_PREVIEW_MIN_WIDTH, QUICK_PREVIEW_MIN_HEIGHT
+  end
+
+  local fit = math.min(
+    QUICK_PREVIEW_MAX_WIDTH / math.max(image.width, 1),
+    QUICK_PREVIEW_MAX_HEIGHT / math.max(image.height, 1),
+    1.0)
+  return
+    math.max(QUICK_PREVIEW_MIN_WIDTH, math.floor(image.width * fit + 0.5)),
+    math.max(QUICK_PREVIEW_MIN_HEIGHT, math.floor(image.height * fit + 0.5))
+end
+
+local function renderQuickPreviewImage()
+  local image, err, status = renderPreviewImageFromPreferences(false)
+  if not image then
+    quickPreviewImage = nil
+    quickPreviewStatus = err or "Could not render the Old TV preview."
+    return false, quickPreviewStatus
+  end
+
+  quickPreviewImage = image
+  quickPreviewStatus = status or "Old TV preview rendered."
+  return true, nil
+end
+
+local function paintQuickPreviewCanvas(ev)
+  local gc = ev.context
+  gc.antialias = false
+  gc.color = Color { r = 10, g = 11, b = 10, a = 255 }
+  gc:fillRect(Rectangle(0, 0, gc.width, gc.height))
+
+  if not quickPreviewImage then
+    gc.color = Color { r = 220, g = 220, b = 220, a = 255 }
+    gc:fillText(quickPreviewStatus ~= "" and quickPreviewStatus or "No CRT preview.", 12, 16)
+    return
+  end
+
+  local fit = math.min(
+    gc.width / math.max(quickPreviewImage.width, 1),
+    gc.height / math.max(quickPreviewImage.height, 1))
+  local drawWidth = math.max(1, math.floor(quickPreviewImage.width * fit + 0.5))
+  local drawHeight = math.max(1, math.floor(quickPreviewImage.height * fit + 0.5))
+  local drawX = math.floor((gc.width - drawWidth) * 0.5)
+  local drawY = math.floor((gc.height - drawHeight) * 0.5)
+
+  gc:drawImage(
+    quickPreviewImage,
+    Rectangle(0, 0, quickPreviewImage.width, quickPreviewImage.height),
+    Rectangle(drawX, drawY, drawWidth, drawHeight))
+end
+
+local function refreshQuickPreviewDialog(dialog)
+  local ok, err = renderQuickPreviewImage()
+  if not ok then
     app.alert {
-      title = "Old TV Preview",
-      text = "This preview would render about " ..
-        tostring(math.floor(projectedPixels)) ..
-        " pixels. Lower the scale or enable transparent-bounds crop."
+      title = "Old TV CRT Preview",
+      text = err or "Could not render the Old TV preview."
+    }
+  end
+
+  if dialog then
+    dialog:modify {
+      id = "status",
+      text = quickPreviewStatus
+    }
+    dialog:repaint()
+  end
+end
+
+local function toggleQuickPreviewWindow()
+  if quickPreviewDialog then
+    quickPreviewDialog:close()
+    quickPreviewDialog = nil
+    return
+  end
+
+  local ok, err = renderQuickPreviewImage()
+  if not ok then
+    app.alert {
+      title = "Old TV CRT Preview",
+      text = err or "Could not render the Old TV preview."
     }
     return
   end
 
-  app.transaction("Render Old TV Preview", function()
-    local sourceRows = readSourceRows(sourceImage, preset)
-    local signalRows = buildSignalRows(sourceRows, sourceImage.width, sourceImage.height, preset)
-    local crtImage = renderCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
-
-    if comparison then
-      local rawImage = renderRawNearest(sourceRows, sourceImage.width, sourceImage.height, scale, margin, preset)
-      crtImage = composeComparison(rawImage, crtImage, preset)
+  local canvasWidth, canvasHeight = quickPreviewCanvasSize(quickPreviewImage)
+  local dlg = Dialog {
+    title = "Old TV CRT Preview",
+    resizeable = true,
+    onclose = function()
+      quickPreviewDialog = nil
     end
+  }
 
-    createSpriteFromImage(crtImage, previewName(sprite, preset, comparison))
-  end)
+  dlg:canvas {
+    id = "previewCanvas",
+    width = canvasWidth,
+    height = canvasHeight,
+    autoscaling = false,
+    hexpand = true,
+    vexpand = true,
+    onpaint = paintQuickPreviewCanvas
+  }
+
+  dlg:label {
+    id = "status",
+    text = quickPreviewStatus
+  }
+
+  dlg:newrow()
+
+  dlg:button {
+    id = "refresh",
+    text = "Refresh",
+    onclick = function()
+      refreshQuickPreviewDialog(dlg)
+    end
+  }
+
+  dlg:button {
+    id = "renderSprite",
+    text = "Render Sprite",
+    onclick = function()
+      local okRender, renderErr = pcall(function()
+        renderPreviewFromPreferences(false)
+      end)
+      if not okRender then
+        app.alert {
+          title = "Old TV Preview",
+          text = tostring(renderErr)
+        }
+      end
+    end
+  }
+
+  dlg:button {
+    id = "settings",
+    text = "Settings",
+    onclick = showRenderDialog
+  }
+
+  dlg:button {
+    id = "close",
+    text = "Close",
+    onclick = function()
+      dlg:close()
+    end
+  }
+
+  quickPreviewDialog = dlg
+  dlg:show {
+    wait = false,
+    autoscrollbars = true
+  }
 end
 
 local function quickRender()
@@ -1159,7 +1337,7 @@ local function quickRender()
   end
 end
 
-local function showRenderDialog()
+function showRenderDialog()
   ensurePreferences()
 
   local prefs = pluginRef.preferences
@@ -1254,6 +1432,16 @@ function init(plugin)
     title = "Old TV Preview: Render...",
     group = "view_controls",
     onclick = showRenderDialog,
+    onenabled = function()
+      return app.isUIAvailable and app.sprite ~= nil
+    end
+  }
+
+  plugin:newCommand {
+    id = "OldTvPreviewQuickPreview",
+    title = "Old TV Preview: CRT Preview Window",
+    group = "view_controls",
+    onclick = toggleQuickPreviewWindow,
     onenabled = function()
       return app.isUIAvailable and app.sprite ~= nil
     end
