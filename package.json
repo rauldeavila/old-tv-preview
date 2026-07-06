@@ -1,0 +1,28 @@
+{
+  "name": "old-tv-preview",
+  "displayName": "Old TV Preview",
+  "description": "Render LIGHTWARD-style Old TV CRT previews from the active Aseprite sprite.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Rafael Araujo"
+  },
+  "publisher": "rauldeavila",
+  "license": "MIT",
+  "categories": [
+    "Scripts",
+    "Keys"
+  ],
+  "contributes": {
+    "scripts": [
+      {
+        "path": "./main.lua"
+      }
+    ],
+    "keys": [
+      {
+        "id": "old-tv-preview-keys",
+        "path": "./old-tv-preview.aseprite-keys"
+      }
+    ]
+  }
+}

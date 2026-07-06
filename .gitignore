@@ -1,0 +1,4 @@
+dist/
+output/
+*.aseprite-extension
+.DS_Store
