@@ -21,6 +21,12 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
 
+## Version 0.2.4
+
+- Pressing `F1` now immediately writes the current unsaved frame to the bridge folder.
+- Pressing `F1` again while Metal Live is already active writes another bridge frame instead of stopping the mode.
+- The `Stop` button in the Metal Live panel is now the explicit way to stop the live bridge.
+
 ## Version 0.2.3
 
 - Switched F1 Metal Live Preview to the bridge-folder workflow: Aseprite writes `frame.png` and `manifest.json`, and `OldTV.app` auto-refreshes from that manifest.
@@ -99,7 +105,7 @@ Default shortcuts:
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
-For the Metal live preview, press `F1` in Aseprite. A small `Old TV Metal Live` panel opens with bridge status. Open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, or click `Open OldTV.app` in that panel. The live stream writes `frame.png` and `manifest.json` into `~/Library/Application Support/OldTV/AsepriteBridge`; `OldTV.app` watches that manifest and updates automatically.
+For the Metal live preview, press `F1` in Aseprite. This immediately writes the current unsaved frame to the bridge folder and opens a small `Old TV Metal Live` panel with status. Open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, or click `Open OldTV.app` in that panel. The live stream writes `frame.png` and `manifest.json` into `~/Library/Application Support/OldTV/AsepriteBridge`; `OldTV.app` watches that manifest and updates automatically.
 
 ## Install
 
@@ -150,7 +156,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.2.3
+git tag v0.2.4
 git push origin main --tags
 ```
 

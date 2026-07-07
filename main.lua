@@ -1,8 +1,7 @@
-local EXTENSION_VERSION = "0.2.3"
+local EXTENSION_VERSION = "0.2.4"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local OLD_TV_APP_PATH = "/Users/rajunior/dev/old-tv/dist/OldTV.app"
 local OLD_TV_BRIDGE_DIR = (os.getenv("HOME") or "") .. "/Library/Application Support/OldTV/AsepriteBridge"
-local OLD_TV_WS_URL = "ws://127.0.0.1:37171/aseprite"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
 local DEFAULT_MARGIN = 14
@@ -806,17 +805,20 @@ local function startMetalLivePreview()
   setMetalLiveStatus("Starting Old TV Metal Live bridge...")
   showMetalLiveDialog()
   syncMetalLiveSpriteListener()
-  markMetalLiveDirty("start")
+  if sendMetalLiveFrame() then
+    metalLiveDirty = false
+  else
+    markMetalLiveDirty("start")
+  end
+  startMetalLiveTimer()
 end
 
 local function toggleMetalLivePreview()
   if metalLiveEnabled then
-    if metalLiveDialog then
-      stopMetalLivePreview()
-      metalLiveDialog:close()
-    else
-      showMetalLiveDialog()
-    end
+    showMetalLiveDialog()
+    metalLiveDirty = false
+    sendMetalLiveFrame()
+    startMetalLiveTimer()
   else
     startMetalLivePreview()
   end
