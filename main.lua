@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.2.2"
+local EXTENSION_VERSION = "0.2.3"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local OLD_TV_APP_PATH = "/Users/rajunior/dev/old-tv/dist/OldTV.app"
 local OLD_TV_BRIDGE_DIR = (os.getenv("HOME") or "") .. "/Library/Application Support/OldTV/AsepriteBridge"
@@ -22,16 +22,12 @@ local QUICK_PREVIEW_TIMER_INTERVAL = 0.18
 local QUICK_PREVIEW_LIVE_MAX_SCALE = 6
 local QUICK_PREVIEW_LIVE_MAX_PIXELS = 260000
 local METAL_LIVE_TIMER_INTERVAL = 0.08
-local METAL_LIVE_RETRY_INTERVAL = 0.75
 
 local pluginRef = nil
 local metalLiveEnabled = false
 local metalLiveDirty = false
 local metalLiveTimer = nil
-local metalLiveSocket = nil
-local metalLiveSocketConnected = false
 local metalLiveSequence = 0
-local metalLiveLastConnectAttempt = 0
 local metalLiveStatus = "Old TV Metal Live is stopped."
 local metalLiveDialog = nil
 local metalLiveSprite = nil
@@ -600,19 +596,15 @@ end
 local function writeMetalLiveFallback(image, sprite, sequence)
   ensureDirectory(OLD_TV_BRIDGE_DIR)
   local pngPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "frame.png")
-  local tmpPngPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "frame.tmp.png")
   local manifestPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "manifest.json")
   local tmpManifestPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "manifest.tmp.json")
 
   local ok, err = pcall(function()
-    image:saveAs(tmpPngPath)
+    image:saveAs(pngPath)
   end)
   if not ok then
     return false, tostring(err)
   end
-
-  os.remove(pngPath)
-  os.rename(tmpPngPath, pngPath)
 
   local manifest = metalLiveMetadataJson(image, sprite, sequence, pngPath)
   if not writeTextFile(tmpManifestPath, manifest) then
@@ -620,68 +612,12 @@ local function writeMetalLiveFallback(image, sprite, sequence)
   end
 
   os.remove(manifestPath)
-  os.rename(tmpManifestPath, manifestPath)
+  local renamed, renameErr = os.rename(tmpManifestPath, manifestPath)
+  if not renamed then
+    return false, tostring(renameErr or "Could not replace Aseprite bridge manifest.")
+  end
+
   return true, nil
-end
-
-local function ensureMetalLiveSocket(force)
-  if not WebSocket then
-    setMetalLiveStatus("Aseprite WebSocket API is not available in this build.")
-    return
-  end
-
-  local now = os.clock()
-  if not force and metalLiveSocket then
-    return
-  end
-  if not force and (now - metalLiveLastConnectAttempt) < METAL_LIVE_RETRY_INTERVAL then
-    return
-  end
-
-  if metalLiveSocket then
-    pcall(function()
-      metalLiveSocket:close()
-    end)
-    metalLiveSocket = nil
-    metalLiveSocketConnected = false
-  end
-
-  metalLiveLastConnectAttempt = now
-  setMetalLiveStatus("Connecting to OldTV.app on 127.0.0.1:37171...")
-
-  local ok, socket = pcall(function()
-    return WebSocket {
-      url = OLD_TV_WS_URL,
-      onopen = function(ws)
-        metalLiveSocketConnected = true
-        metalLiveDirty = true
-        setMetalLiveStatus("Connected. Brush and eraser edits are streaming to OldTV.app.")
-      end,
-      onclose = function(ws)
-        metalLiveSocketConnected = false
-        metalLiveSocket = nil
-        if metalLiveEnabled then
-          setMetalLiveStatus("Disconnected. Open OldTV.app, then click Retry.")
-        end
-      end,
-      onerror = function(ws, err)
-        metalLiveSocketConnected = false
-        metalLiveSocket = nil
-        if metalLiveEnabled then
-          setMetalLiveStatus("Could not connect. Open OldTV.app, then click Retry.")
-        end
-      end
-    }
-  end)
-
-  if ok and socket then
-    metalLiveSocket = socket
-    pcall(function()
-      metalLiveSocket:connect()
-    end)
-  else
-    setMetalLiveStatus("Could not create WebSocket. Open OldTV.app and click Retry.")
-  end
 end
 
 local function sendMetalLiveFrame()
@@ -689,32 +625,16 @@ local function sendMetalLiveFrame()
     return true
   end
 
-  ensureMetalLiveSocket()
-  if not metalLiveSocketConnected then
-    return false
-  end
-
   local sprite = app.sprite
   local image = mergedCurrentFrame(sprite)
   metalLiveSequence = metalLiveSequence + 1
-  local metadata = metalLiveMetadataJson(image, sprite, metalLiveSequence, nil)
-  local payload = metadata .. "\n" .. image.bytes
-  local ok = pcall(function()
-    metalLiveSocket:sendBinary(payload)
-  end)
-  if ok ~= true then
-    metalLiveSocketConnected = false
-    if metalLiveSocket then
-      pcall(function()
-        metalLiveSocket:close()
-      end)
-    end
-    metalLiveSocket = nil
-    setMetalLiveStatus("Could not send frame. Retrying WebSocket connection...")
+  local ok, err = writeMetalLiveFallback(image, sprite, metalLiveSequence)
+  if not ok then
+    setMetalLiveStatus("Could not write bridge frame: " .. tostring(err))
     return false
   end
 
-  setMetalLiveStatus("Streaming frame " .. tostring(activeFrameNumber()) .. " to OldTV.app.")
+  setMetalLiveStatus("Wrote frame " .. tostring(activeFrameNumber()) .. " to bridge folder. OldTV.app should update automatically.")
   return true
 end
 
@@ -735,10 +655,6 @@ local function startMetalLiveTimer()
       if not metalLiveEnabled then
         stopMetalLiveTimer()
         return
-      end
-
-      if not metalLiveSocketConnected then
-        ensureMetalLiveSocket(false)
       end
 
       if metalLiveDirty then
@@ -819,7 +735,7 @@ local function showMetalLiveDialog()
   }
 
   dlg:label {
-    text = "Keep OldTV.app open. F1 streams the unsaved frame through WebSocket only."
+    text = "Keep OldTV.app open. F1 writes the unsaved frame to the bridge folder."
   }
 
   dlg:button {
@@ -827,19 +743,17 @@ local function showMetalLiveDialog()
     text = "Open OldTV.app",
     onclick = function()
       openOldTVApp()
-      setMetalLiveStatus("Opening OldTV.app. Waiting for WebSocket...")
+      setMetalLiveStatus("Opening OldTV.app. Writing next frame to bridge folder...")
       metalLiveDirty = true
-      ensureMetalLiveSocket(true)
       startMetalLiveTimer()
     end
   }
 
   dlg:button {
     id = "retry",
-    text = "Retry",
+    text = "Write Bridge",
     onclick = function()
       metalLiveDirty = true
-      ensureMetalLiveSocket(true)
       startMetalLiveTimer()
     end
   }
@@ -876,13 +790,6 @@ function stopMetalLivePreview()
   metalLiveDirty = false
   stopMetalLiveTimer()
   detachMetalLiveSpriteListener()
-  if metalLiveSocket then
-    pcall(function()
-      metalLiveSocket:close()
-    end)
-  end
-  metalLiveSocket = nil
-  metalLiveSocketConnected = false
   setMetalLiveStatus("Old TV Metal Live is stopped.")
 end
 
@@ -896,9 +803,8 @@ local function startMetalLivePreview()
   end
 
   metalLiveEnabled = true
-  setMetalLiveStatus("Starting Old TV Metal Live...")
+  setMetalLiveStatus("Starting Old TV Metal Live bridge...")
   showMetalLiveDialog()
-  ensureMetalLiveSocket(true)
   syncMetalLiveSpriteListener()
   markMetalLiveDirty("start")
 end

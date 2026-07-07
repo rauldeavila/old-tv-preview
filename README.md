@@ -7,7 +7,7 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 ## Features
 
 - Send unsaved Aseprite brush/eraser edits to `OldTV.app` for Metal live preview.
-- Uses WebSocket for live frames so the interactive preview does not need Aseprite file/execute permissions.
+- Writes the active unsaved frame to `~/Library/Application Support/OldTV/AsepriteBridge/frame.png` with a `manifest.json` that `OldTV.app` watches.
 - Shows a Metal Live status panel with retry/send controls so connection failures are visible.
 - Render the active frame through a Lua Old TV CRT approximation when needed.
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
@@ -20,6 +20,12 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.2.3
+
+- Switched F1 Metal Live Preview to the bridge-folder workflow: Aseprite writes `frame.png` and `manifest.json`, and `OldTV.app` auto-refreshes from that manifest.
+- Removed WebSocket from the critical live path because Aseprite was not reliably updating the visible app window through it.
+- The panel now has `Write Bridge` / `Send Now` controls for forcing a fresh bridge write.
 
 ## Version 0.2.2
 
@@ -93,7 +99,7 @@ Default shortcuts:
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
-For the Metal live preview, press `F1` in Aseprite. A small `Old TV Metal Live` panel opens with connection status. Open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, or click `Open OldTV.app` in that panel. The live stream only uses the local WebSocket bridge; it should not ask for Write or Read access during normal painting.
+For the Metal live preview, press `F1` in Aseprite. A small `Old TV Metal Live` panel opens with bridge status. Open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, or click `Open OldTV.app` in that panel. The live stream writes `frame.png` and `manifest.json` into `~/Library/Application Support/OldTV/AsepriteBridge`; `OldTV.app` watches that manifest and updates automatically.
 
 ## Install
 
@@ -144,7 +150,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.2.2
+git tag v0.2.3
 git push origin main --tags
 ```
 
