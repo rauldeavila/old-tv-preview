@@ -8,7 +8,7 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 
 - Send unsaved Aseprite brush/eraser edits to `OldTV.app` for Metal live preview.
 - Uses WebSocket for live frames so the interactive preview does not need Aseprite file/execute permissions.
-- Requires `OldTV.app` to be open before starting the Metal live preview.
+- Shows a Metal Live status panel with retry/send controls so connection failures are visible.
 - Render the active frame through a Lua Old TV CRT approximation when needed.
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
 - Includes `Reference Match` and `Color Leak` preset variants.
@@ -20,6 +20,12 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.2.2
+
+- Added an `Old TV Metal Live` status panel when pressing `F1`, so the command is visibly running.
+- Added WebSocket retry/status handling while `OldTV.app` is starting or disconnected.
+- Added an explicit `Open OldTV.app` button instead of silently doing nothing when the app is closed.
 
 ## Version 0.2.1
 
@@ -87,7 +93,7 @@ Default shortcuts:
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
-For the Metal live preview, open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, then press `F1` in Aseprite. The `F1` command only uses the local WebSocket bridge; it should not ask for Execute, Write, or Read access during normal painting.
+For the Metal live preview, press `F1` in Aseprite. A small `Old TV Metal Live` panel opens with connection status. Open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, or click `Open OldTV.app` in that panel. The live stream only uses the local WebSocket bridge; it should not ask for Write or Read access during normal painting.
 
 ## Install
 
@@ -138,7 +144,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.2.1
+git tag v0.2.2
 git push origin main --tags
 ```
 
