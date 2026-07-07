@@ -11,9 +11,17 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 - Includes `Reference Match` and `Color Leak` preset variants.
 - Optional side-by-side comparison with nearest-neighbor raw upscale.
 - F7 CRT preview window that draws the filtered image without creating a new sprite.
+- Auto-refreshes the CRT preview window after sprite edits, frame changes, undo/redo, and other Aseprite commands.
+- Display zoom controls for keeping the CRT preview small in a corner or expanding it.
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.1.3
+
+- Added debounced auto-refresh to the CRT preview window through Aseprite `sitechange` and `aftercommand` events.
+- Added preview display zoom controls: `-`, `+`, `Small`, and `100%`.
+- Changed the default CRT preview window zoom to 55% so it behaves more like a small corner preview.
 
 ## Version 0.1.2
 
@@ -91,7 +99,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.2
+git tag v0.1.3
 git push origin main --tags
 ```
 

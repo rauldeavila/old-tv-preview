@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.2"
+local EXTENSION_VERSION = "0.1.3"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
@@ -9,13 +9,22 @@ local MAX_RENDER_PIXELS = 2300000
 local COMPARISON_GAP = 18
 local QUICK_PREVIEW_MAX_WIDTH = 720
 local QUICK_PREVIEW_MAX_HEIGHT = 720
-local QUICK_PREVIEW_MIN_WIDTH = 240
-local QUICK_PREVIEW_MIN_HEIGHT = 180
+local QUICK_PREVIEW_MIN_WIDTH = 180
+local QUICK_PREVIEW_MIN_HEIGHT = 140
+local QUICK_PREVIEW_DEFAULT_ZOOM = 0.55
+local QUICK_PREVIEW_MIN_ZOOM = 0.20
+local QUICK_PREVIEW_MAX_ZOOM = 2.00
+local QUICK_PREVIEW_ZOOM_STEP = 0.10
+local QUICK_PREVIEW_TIMER_INTERVAL = 0.35
 
 local pluginRef = nil
 local quickPreviewDialog = nil
 local quickPreviewImage = nil
 local quickPreviewStatus = ""
+local quickPreviewTimer = nil
+local quickPreviewDirty = false
+local quickPreviewRendering = false
+local listeners = {}
 
 local pc = app.pixelColor
 
@@ -417,6 +426,16 @@ local function ensurePreferences()
 
   if type(prefs.comparison) ~= "boolean" then
     prefs.comparison = false
+  end
+
+  if type(prefs.quickPreviewAutoRefresh) ~= "boolean" then
+    prefs.quickPreviewAutoRefresh = true
+  end
+
+  if type(prefs.quickPreviewZoom) ~= "number" then
+    prefs.quickPreviewZoom = QUICK_PREVIEW_DEFAULT_ZOOM
+  else
+    prefs.quickPreviewZoom = clamp(prefs.quickPreviewZoom, QUICK_PREVIEW_MIN_ZOOM, QUICK_PREVIEW_MAX_ZOOM)
   end
 end
 
@@ -1166,22 +1185,31 @@ end
 
 local showRenderDialog
 
+local function quickPreviewZoom()
+  ensurePreferences()
+  return clamp(pluginRef.preferences.quickPreviewZoom, QUICK_PREVIEW_MIN_ZOOM, QUICK_PREVIEW_MAX_ZOOM)
+end
+
+local function quickPreviewZoomText()
+  return tostring(math.floor(quickPreviewZoom() * 100.0 + 0.5)) .. "%"
+end
+
 local function quickPreviewCanvasSize(image)
+  local zoom = quickPreviewZoom()
   if not image then
     return QUICK_PREVIEW_MIN_WIDTH, QUICK_PREVIEW_MIN_HEIGHT
   end
 
-  local fit = math.min(
-    QUICK_PREVIEW_MAX_WIDTH / math.max(image.width, 1),
-    QUICK_PREVIEW_MAX_HEIGHT / math.max(image.height, 1),
-    1.0)
   return
-    math.max(QUICK_PREVIEW_MIN_WIDTH, math.floor(image.width * fit + 0.5)),
-    math.max(QUICK_PREVIEW_MIN_HEIGHT, math.floor(image.height * fit + 0.5))
+    clampInt(math.floor(image.width * zoom + 0.5), QUICK_PREVIEW_MIN_WIDTH, QUICK_PREVIEW_MIN_WIDTH, QUICK_PREVIEW_MAX_WIDTH),
+    clampInt(math.floor(image.height * zoom + 0.5), QUICK_PREVIEW_MIN_HEIGHT, QUICK_PREVIEW_MIN_HEIGHT, QUICK_PREVIEW_MAX_HEIGHT)
 end
 
 local function renderQuickPreviewImage()
+  quickPreviewRendering = true
   local image, err, status = renderPreviewImageFromPreferences(false)
+  quickPreviewRendering = false
+
   if not image then
     quickPreviewImage = nil
     quickPreviewStatus = err or "Could not render the Old TV preview."
@@ -1189,7 +1217,7 @@ local function renderQuickPreviewImage()
   end
 
   quickPreviewImage = image
-  quickPreviewStatus = status or "Old TV preview rendered."
+  quickPreviewStatus = (status or "Old TV preview rendered.") .. " | zoom " .. quickPreviewZoomText()
   return true, nil
 end
 
@@ -1205,18 +1233,50 @@ local function paintQuickPreviewCanvas(ev)
     return
   end
 
-  local fit = math.min(
-    gc.width / math.max(quickPreviewImage.width, 1),
-    gc.height / math.max(quickPreviewImage.height, 1))
-  local drawWidth = math.max(1, math.floor(quickPreviewImage.width * fit + 0.5))
-  local drawHeight = math.max(1, math.floor(quickPreviewImage.height * fit + 0.5))
-  local drawX = math.floor((gc.width - drawWidth) * 0.5)
-  local drawY = math.floor((gc.height - drawHeight) * 0.5)
+  local zoom = quickPreviewZoom()
+  local drawWidth = math.max(1, math.floor(quickPreviewImage.width * zoom + 0.5))
+  local drawHeight = math.max(1, math.floor(quickPreviewImage.height * zoom + 0.5))
+  local drawX = math.max(0, math.floor((gc.width - drawWidth) * 0.5))
+  local drawY = math.max(0, math.floor((gc.height - drawHeight) * 0.5))
 
   gc:drawImage(
     quickPreviewImage,
     Rectangle(0, 0, quickPreviewImage.width, quickPreviewImage.height),
     Rectangle(drawX, drawY, drawWidth, drawHeight))
+end
+
+local function resizeQuickPreviewCanvas(dialog)
+  if not dialog then
+    return
+  end
+
+  local canvasWidth, canvasHeight = quickPreviewCanvasSize(quickPreviewImage)
+  pcall(function()
+    dialog:modify {
+      id = "previewCanvas",
+      width = canvasWidth,
+      height = canvasHeight
+    }
+  end)
+end
+
+local function updateQuickPreviewDialogStatus(dialog)
+  if not dialog then
+    return
+  end
+
+  pcall(function()
+    dialog:modify {
+      id = "status",
+      text = quickPreviewStatus
+    }
+  end)
+  pcall(function()
+    dialog:modify {
+      id = "zoomLabel",
+      text = quickPreviewZoomText()
+    }
+  end)
 end
 
 local function refreshQuickPreviewDialog(dialog)
@@ -1229,11 +1289,68 @@ local function refreshQuickPreviewDialog(dialog)
   end
 
   if dialog then
-    dialog:modify {
-      id = "status",
-      text = quickPreviewStatus
-    }
+    resizeQuickPreviewCanvas(dialog)
+    updateQuickPreviewDialogStatus(dialog)
     dialog:repaint()
+  end
+end
+
+local function stopQuickPreviewTimer()
+  if quickPreviewTimer and quickPreviewTimer.isRunning then
+    quickPreviewTimer:stop()
+  end
+end
+
+local function startQuickPreviewTimer()
+  if quickPreviewTimer and quickPreviewTimer.isRunning then
+    return
+  end
+
+  quickPreviewTimer = Timer {
+    interval = QUICK_PREVIEW_TIMER_INTERVAL,
+    ontick = function()
+      if not quickPreviewDialog then
+        stopQuickPreviewTimer()
+        return
+      end
+
+      if quickPreviewDirty and pluginRef.preferences.quickPreviewAutoRefresh == true and not quickPreviewRendering then
+        quickPreviewDirty = false
+        refreshQuickPreviewDialog(quickPreviewDialog)
+      end
+    end
+  }
+  quickPreviewTimer:start()
+end
+
+local function markQuickPreviewDirty(reason)
+  if not quickPreviewDialog or quickPreviewRendering then
+    return
+  end
+
+  ensurePreferences()
+  if pluginRef.preferences.quickPreviewAutoRefresh ~= true then
+    return
+  end
+
+  quickPreviewDirty = true
+  quickPreviewStatus = "Updating CRT preview..."
+  updateQuickPreviewDialogStatus(quickPreviewDialog)
+  startQuickPreviewTimer()
+end
+
+local function setQuickPreviewZoom(value)
+  ensurePreferences()
+  pluginRef.preferences.quickPreviewZoom = clamp(value, QUICK_PREVIEW_MIN_ZOOM, QUICK_PREVIEW_MAX_ZOOM)
+
+  if quickPreviewImage then
+    quickPreviewStatus = "CRT preview ready | zoom " .. quickPreviewZoomText()
+  end
+
+  resizeQuickPreviewCanvas(quickPreviewDialog)
+  updateQuickPreviewDialogStatus(quickPreviewDialog)
+  if quickPreviewDialog then
+    quickPreviewDialog:repaint()
   end
 end
 
@@ -1259,6 +1376,8 @@ local function toggleQuickPreviewWindow()
     resizeable = true,
     onclose = function()
       quickPreviewDialog = nil
+      quickPreviewDirty = false
+      stopQuickPreviewTimer()
     end
   }
 
@@ -1275,6 +1394,57 @@ local function toggleQuickPreviewWindow()
   dlg:label {
     id = "status",
     text = quickPreviewStatus
+  }
+
+  dlg:newrow()
+
+  dlg:check {
+    id = "autoRefresh",
+    text = "Auto refresh",
+    selected = pluginRef.preferences.quickPreviewAutoRefresh == true,
+    onclick = function()
+      pluginRef.preferences.quickPreviewAutoRefresh = dlg.data.autoRefresh == true
+      if pluginRef.preferences.quickPreviewAutoRefresh == true then
+        markQuickPreviewDirty("auto refresh enabled")
+      end
+    end
+  }
+
+  dlg:label {
+    id = "zoomLabel",
+    text = quickPreviewZoomText()
+  }
+
+  dlg:button {
+    id = "zoomOut",
+    text = "-",
+    onclick = function()
+      setQuickPreviewZoom(quickPreviewZoom() - QUICK_PREVIEW_ZOOM_STEP)
+    end
+  }
+
+  dlg:button {
+    id = "zoomIn",
+    text = "+",
+    onclick = function()
+      setQuickPreviewZoom(quickPreviewZoom() + QUICK_PREVIEW_ZOOM_STEP)
+    end
+  }
+
+  dlg:button {
+    id = "zoomSmall",
+    text = "Small",
+    onclick = function()
+      setQuickPreviewZoom(0.45)
+    end
+  }
+
+  dlg:button {
+    id = "zoom100",
+    text = "100%",
+    onclick = function()
+      setQuickPreviewZoom(1.0)
+    end
   }
 
   dlg:newrow()
@@ -1318,6 +1488,7 @@ local function toggleQuickPreviewWindow()
   }
 
   quickPreviewDialog = dlg
+  startQuickPreviewTimer()
   dlg:show {
     wait = false,
     autoscrollbars = true
@@ -1335,6 +1506,14 @@ local function quickRender()
       text = tostring(err)
     }
   end
+end
+
+local function onQuickPreviewSiteChange()
+  markQuickPreviewDirty("sitechange")
+end
+
+local function onQuickPreviewAfterCommand(ev)
+  markQuickPreviewDirty("aftercommand")
 end
 
 function showRenderDialog()
@@ -1444,6 +1623,9 @@ function init(plugin)
     onclick = toggleQuickPreviewWindow,
     onenabled = function()
       return app.isUIAvailable and app.sprite ~= nil
+    end,
+    onchecked = function()
+      return quickPreviewDialog ~= nil
     end
   }
 
@@ -1466,9 +1648,28 @@ function init(plugin)
       return app.isUIAvailable
     end
   }
+
+  listeners.sitechange = app.events:on("sitechange", onQuickPreviewSiteChange)
+  listeners.aftercommand = app.events:on("aftercommand", onQuickPreviewAfterCommand)
 end
 
 function exit(plugin)
+  if app and app.events then
+    for _, listener in pairs(listeners) do
+      pcall(function()
+        app.events:off(listener)
+      end)
+    end
+  end
+
+  stopQuickPreviewTimer()
+  if quickPreviewDialog then
+    pcall(function()
+      quickPreviewDialog:close()
+    end)
+    quickPreviewDialog = nil
+  end
+
   pluginRef = nil
 end
 
