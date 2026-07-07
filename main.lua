@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.3"
+local EXTENSION_VERSION = "0.1.4"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
@@ -15,7 +15,9 @@ local QUICK_PREVIEW_DEFAULT_ZOOM = 0.55
 local QUICK_PREVIEW_MIN_ZOOM = 0.20
 local QUICK_PREVIEW_MAX_ZOOM = 2.00
 local QUICK_PREVIEW_ZOOM_STEP = 0.10
-local QUICK_PREVIEW_TIMER_INTERVAL = 0.35
+local QUICK_PREVIEW_TIMER_INTERVAL = 0.10
+local QUICK_PREVIEW_LIVE_MAX_SCALE = 8
+local QUICK_PREVIEW_LIVE_MAX_PIXELS = 420000
 
 local pluginRef = nil
 local quickPreviewDialog = nil
@@ -24,6 +26,7 @@ local quickPreviewStatus = ""
 local quickPreviewTimer = nil
 local quickPreviewDirty = false
 local quickPreviewRendering = false
+local quickPreviewHighQuality = false
 local listeners = {}
 
 local pc = app.pixelColor
@@ -993,6 +996,55 @@ local function applyBackdropArtifactsPixel(r, g, b, screenX, screenY, preset)
   return r, g, b
 end
 
+local function renderLiveCrtImage(signalRows, width, height, scale, margin, preset)
+  local outWidth = (width * scale) + (margin * 2)
+  local outHeight = (height * scale) + (margin * 2)
+  local image = Image(outWidth, outHeight, ColorMode.RGB)
+  local matrixR, matrixG, matrixB = matrixColor(preset)
+
+  for y = 0, outHeight - 1 do
+    for x = 0, outWidth - 1 do
+      local r = matrixR
+      local g = matrixG
+      local b = matrixB
+      local sourceX = (x + 1.5 - margin) / scale
+      local sourceY = (y + 1.5 - margin) / scale
+
+      if sourceX >= 0 and sourceY >= 0 and sourceX < width and sourceY < height then
+        local cellX = math.floor(sourceX)
+        local cellY = math.floor(sourceY)
+        local localX = fract(sourceX)
+        local localY = fract(sourceY)
+        local sourceColor = sourceOrBackgroundSignal(signalRows, width, height, cellX, cellY, preset)
+        local above = aboveBackground(sourceColor, preset)
+        local sourceSignal = math.max(above.peak, above.l)
+        local active = smoothstep(preset.activeThreshold, preset.activeThreshold + 0.16, sourceSignal)
+
+        if active > 0.0 then
+          local aperture = cellMask(localX, localY, preset)
+          local brightness = saturate(sourceColor.l * 1.22)
+          local gain = 0.72 + brightness * 0.38
+          local beam = active * aperture * gain
+          local redMask, greenMask, blueMask = subpixelStripMask(localX, localY, preset)
+          local scan = scanlineOpen(y, brightness, preset)
+          local fill = beam * scan * 0.42
+          local glow = math.max(0.0, above.l - preset.bloomThreshold) * 0.52
+
+          r = r + sourceColor.r * beam * redMask * scan + sourceColor.r * fill + sourceColor.r * glow
+          g = g + sourceColor.g * beam * greenMask * scan + sourceColor.g * fill + sourceColor.g * glow
+          b = b + sourceColor.b * beam * blueMask * scan + sourceColor.b * fill + sourceColor.b * glow
+        end
+      end
+
+      r, g, b = gradePixel(r, g, b, x, y, outWidth, outHeight, preset)
+      r, g, b = applyBlackFadePixel(r, g, b, preset)
+      writeRgb(image, x, y, r, g, b)
+    end
+  end
+
+  return image
+end
+
 local function renderCrtImage(signalRows, width, height, scale, margin, preset)
   local outWidth = (width * scale) + (margin * 2)
   local outHeight = (height * scale) + (margin * 2)
@@ -1159,6 +1211,41 @@ local function renderPreviewImageFromPreferences(comparisonOverride)
   return crtImage, nil, status
 end
 
+local function renderLivePreviewImageFromPreferences()
+  ensurePreferences()
+
+  local sprite = app.sprite
+  if not sprite then
+    return nil, "Open a sprite before rendering an Old TV preview."
+  end
+
+  local prefs = pluginRef.preferences
+  local preset = presetById(prefs.presetId)
+  local sourceImage, _, sourceError = captureSource(sprite, prefs.cropTransparentBounds == true)
+  if not sourceImage then
+    return nil, sourceError or "Could not capture the current frame."
+  end
+
+  local scale = clampInt(math.min(prefs.scale, QUICK_PREVIEW_LIVE_MAX_SCALE), DEFAULT_SCALE, MIN_SCALE, QUICK_PREVIEW_LIVE_MAX_SCALE)
+  local margin = clampInt(math.min(prefs.margin, 6), DEFAULT_MARGIN, 0, 24)
+  local outWidth = (sourceImage.width * scale) + (margin * 2)
+  local outHeight = (sourceImage.height * scale) + (margin * 2)
+  local projectedPixels = outWidth * outHeight
+
+  if projectedPixels > QUICK_PREVIEW_LIVE_MAX_PIXELS then
+    local fit = math.sqrt(QUICK_PREVIEW_LIVE_MAX_PIXELS / math.max(sourceImage.width * sourceImage.height, 1))
+    scale = clampInt(math.floor(fit), scale, MIN_SCALE, QUICK_PREVIEW_LIVE_MAX_SCALE)
+    outWidth = (sourceImage.width * scale) + (margin * 2)
+    outHeight = (sourceImage.height * scale) + (margin * 2)
+  end
+
+  local sourceRows = readSourceRows(sourceImage, preset)
+  local signalRows = buildSignalRows(sourceRows, sourceImage.width, sourceImage.height, preset)
+  local crtImage = renderLiveCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
+  local status = "Live Fast | " .. preset.name .. " | " .. tostring(crtImage.width) .. "x" .. tostring(crtImage.height) .. " | scale " .. tostring(scale)
+  return crtImage, nil, status
+end
+
 local function renderPreviewFromPreferences(comparisonOverride)
   ensurePreferences()
 
@@ -1205,9 +1292,17 @@ local function quickPreviewCanvasSize(image)
     clampInt(math.floor(image.height * zoom + 0.5), QUICK_PREVIEW_MIN_HEIGHT, QUICK_PREVIEW_MIN_HEIGHT, QUICK_PREVIEW_MAX_HEIGHT)
 end
 
-local function renderQuickPreviewImage()
+local function renderQuickPreviewImage(highQuality)
   quickPreviewRendering = true
-  local image, err, status = renderPreviewImageFromPreferences(false)
+  local startTime = os.clock()
+  local image, err, status
+  quickPreviewHighQuality = highQuality == true
+  if quickPreviewHighQuality then
+    image, err, status = renderPreviewImageFromPreferences(false)
+  else
+    image, err, status = renderLivePreviewImageFromPreferences()
+  end
+  local elapsed = os.clock() - startTime
   quickPreviewRendering = false
 
   if not image then
@@ -1217,7 +1312,9 @@ local function renderQuickPreviewImage()
   end
 
   quickPreviewImage = image
-  quickPreviewStatus = (status or "Old TV preview rendered.") .. " | zoom " .. quickPreviewZoomText()
+  quickPreviewStatus = (status or "Old TV preview rendered.") ..
+    " | zoom " .. quickPreviewZoomText() ..
+    " | " .. string.format("%.2fs", elapsed)
   return true, nil
 end
 
@@ -1279,8 +1376,8 @@ local function updateQuickPreviewDialogStatus(dialog)
   end)
 end
 
-local function refreshQuickPreviewDialog(dialog)
-  local ok, err = renderQuickPreviewImage()
+local function refreshQuickPreviewDialog(dialog, highQuality)
+  local ok, err = renderQuickPreviewImage(highQuality)
   if not ok then
     app.alert {
       title = "Old TV CRT Preview",
@@ -1316,7 +1413,7 @@ local function startQuickPreviewTimer()
 
       if quickPreviewDirty and pluginRef.preferences.quickPreviewAutoRefresh == true and not quickPreviewRendering then
         quickPreviewDirty = false
-        refreshQuickPreviewDialog(quickPreviewDialog)
+        refreshQuickPreviewDialog(quickPreviewDialog, false)
       end
     end
   }
@@ -1334,7 +1431,7 @@ local function markQuickPreviewDirty(reason)
   end
 
   quickPreviewDirty = true
-  quickPreviewStatus = "Updating CRT preview..."
+  quickPreviewStatus = "Updating live CRT preview..."
   updateQuickPreviewDialogStatus(quickPreviewDialog)
   startQuickPreviewTimer()
 end
@@ -1361,7 +1458,7 @@ local function toggleQuickPreviewWindow()
     return
   end
 
-  local ok, err = renderQuickPreviewImage()
+  local ok, err = renderQuickPreviewImage(false)
   if not ok then
     app.alert {
       title = "Old TV CRT Preview",
@@ -1451,9 +1548,17 @@ local function toggleQuickPreviewWindow()
 
   dlg:button {
     id = "refresh",
-    text = "Refresh",
+    text = "Fast Refresh",
     onclick = function()
-      refreshQuickPreviewDialog(dlg)
+      refreshQuickPreviewDialog(dlg, false)
+    end
+  }
+
+  dlg:button {
+    id = "highQuality",
+    text = "HQ Once",
+    onclick = function()
+      refreshQuickPreviewDialog(dlg, true)
     end
   }
 
@@ -1702,7 +1807,15 @@ local function runCliSmokeTest()
     }
   }
 
-  renderPreviewFromPreferences(false)
+  if app.params.live == "1" or app.params.live == "true" then
+    local image, err = renderLivePreviewImageFromPreferences()
+    if not image then
+      error(err or "Could not render live preview smoke test.")
+    end
+    createSpriteFromImage(image, "old-tv-live-smoke")
+  else
+    renderPreviewFromPreferences(false)
+  end
 
   local output = app.params["output"]
   if output and output ~= "" and app.sprite then

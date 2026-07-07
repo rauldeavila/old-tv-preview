@@ -13,9 +13,16 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 - F7 CRT preview window that draws the filtered image without creating a new sprite.
 - Auto-refreshes the CRT preview window after sprite edits, frame changes, undo/redo, and other Aseprite commands.
 - Display zoom controls for keeping the CRT preview small in a corner or expanding it.
+- Fast live CRT mode for drawing feedback, with a separate `HQ Once` button for the heavier full render.
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.1.4
+
+- Reworked live preview refresh to use a lightweight CRT renderer instead of the full bloom pipeline on every edit.
+- Added `HQ Once` for one-off full-quality preview checks without making brush strokes slow.
+- Reduced the auto-refresh debounce to 0.10s because live refresh is now intentionally cheaper.
 
 ## Version 0.1.3
 
@@ -99,7 +106,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.3
+git tag v0.1.4
 git push origin main --tags
 ```
 
