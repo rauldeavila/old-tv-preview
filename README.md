@@ -7,8 +7,8 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 ## Features
 
 - Send unsaved Aseprite brush/eraser edits to `OldTV.app` for Metal live preview.
-- Uses WebSocket for live frames and a temp PNG manifest fallback in `~/Library/Application Support/OldTV/AsepriteBridge`.
-- Opens/focuses the Metal app from Aseprite with F1.
+- Uses WebSocket for live frames so the interactive preview does not need Aseprite file/execute permissions.
+- Requires `OldTV.app` to be open before starting the Metal live preview.
 - Render the active frame through a Lua Old TV CRT approximation when needed.
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
 - Includes `Reference Match` and `Color Leak` preset variants.
@@ -21,10 +21,16 @@ The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the 
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
 
+## Version 0.2.1
+
+- Changed Metal Live Preview to use WebSocket only during interactive preview.
+- Removed the automatic `open OldTV.app` shell command and temp PNG fallback from the F1 live path, so Aseprite no longer loops on Execute/Write/Read security prompts.
+- Kept the temp PNG bridge only for CLI smoke/debug checks.
+
 ## Version 0.2.0
 
 - Added `Old TV Preview: Metal Live Preview`.
-- F1 now opens/focuses `OldTV.app` and streams the current unsaved Aseprite frame to it.
+- F1 opens the Metal live preview command and streams the current unsaved Aseprite frame to `OldTV.app`.
 - Added WebSocket transport with temp PNG fallback for the Metal app.
 - Kept the Lua CRT preview as `Old TV Preview: Lua CRT Preview Window` without the default F1 shortcut.
 
@@ -81,6 +87,8 @@ Default shortcuts:
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
+For the Metal live preview, open `/Users/rajunior/dev/old-tv/dist/OldTV.app` first, then press `F1` in Aseprite. The `F1` command only uses the local WebSocket bridge; it should not ask for Execute, Write, or Read access during normal painting.
+
 ## Install
 
 Build the extension:
@@ -130,7 +138,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.2.0
+git tag v0.2.1
 git push origin main --tags
 ```
 

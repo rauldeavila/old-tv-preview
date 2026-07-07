@@ -1,6 +1,5 @@
-local EXTENSION_VERSION = "0.2.0"
+local EXTENSION_VERSION = "0.2.1"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
-local OLD_TV_APP_PATH = "/Users/rajunior/dev/old-tv/dist/OldTV.app"
 local OLD_TV_BRIDGE_DIR = (os.getenv("HOME") or "") .. "/Library/Application Support/OldTV/AsepriteBridge"
 local OLD_TV_WS_URL = "ws://127.0.0.1:37171/aseprite"
 local DEFAULT_PRESET_ID = "july_teste_01"
@@ -296,15 +295,6 @@ local function ensureDirectory(path)
   os.execute("mkdir -p " .. shellQuote(path))
 end
 
-local function fileExists(path)
-  local handle = io.open(path, "rb")
-  if handle then
-    handle:close()
-    return true
-  end
-  return false
-end
-
 local function readCommand(command)
   local handle = io.popen(command)
   if not handle then
@@ -365,17 +355,6 @@ end
 
 local function openFile(path)
   os.execute("open " .. shellQuote(path))
-end
-
-local function openOldTVApp()
-  if fileExists(OLD_TV_APP_PATH) then
-    os.execute("open " .. shellQuote(OLD_TV_APP_PATH))
-  else
-    app.alert {
-      title = "Old TV Preview",
-      text = "OldTV.app was not found at:\n" .. OLD_TV_APP_PATH .. "\n\nBuild it with scripts/build-app.sh in /Users/rajunior/dev/old-tv."
-    }
-  end
 end
 
 local function checkForUpdates()
@@ -636,6 +615,7 @@ local function ensureMetalLiveSocket()
       end,
       onerror = function(ws, err)
         metalLiveSocketConnected = false
+        metalLiveSocket = nil
       end
     }
   end)
@@ -650,30 +630,34 @@ end
 
 local function sendMetalLiveFrame()
   if not metalLiveEnabled or not app.sprite then
-    return
+    return true
+  end
+
+  ensureMetalLiveSocket()
+  if not metalLiveSocketConnected then
+    return true
   end
 
   local sprite = app.sprite
   local image = mergedCurrentFrame(sprite)
   metalLiveSequence = metalLiveSequence + 1
-
-  local sentOverSocket = false
-  ensureMetalLiveSocket()
-  if metalLiveSocket and metalLiveSocketConnected then
-    local metadata = metalLiveMetadataJson(image, sprite, metalLiveSequence, nil)
-    local payload = metadata .. "\n" .. image.bytes
-    local ok = pcall(function()
-      metalLiveSocket:sendBinary(payload)
-    end)
-    sentOverSocket = ok == true
-    if not sentOverSocket then
-      metalLiveSocketConnected = false
+  local metadata = metalLiveMetadataJson(image, sprite, metalLiveSequence, nil)
+  local payload = metadata .. "\n" .. image.bytes
+  local ok = pcall(function()
+    metalLiveSocket:sendBinary(payload)
+  end)
+  if ok ~= true then
+    metalLiveSocketConnected = false
+    if metalLiveSocket then
+      pcall(function()
+        metalLiveSocket:close()
+      end)
     end
+    metalLiveSocket = nil
+    return true
   end
 
-  if not sentOverSocket then
-    writeMetalLiveFallback(image, sprite, metalLiveSequence)
-  end
+  return true
 end
 
 local function stopMetalLiveTimer()
@@ -696,8 +680,7 @@ local function startMetalLiveTimer()
       end
 
       if metalLiveDirty then
-        metalLiveDirty = false
-        sendMetalLiveFrame()
+        metalLiveDirty = not sendMetalLiveFrame()
       end
     end
   }
@@ -773,11 +756,9 @@ local function startMetalLivePreview()
   end
 
   metalLiveEnabled = true
-  openOldTVApp()
   ensureMetalLiveSocket()
   syncMetalLiveSpriteListener()
   markMetalLiveDirty("start")
-  sendMetalLiveFrame()
 end
 
 local function toggleMetalLivePreview()
