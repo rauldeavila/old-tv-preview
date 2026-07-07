@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.4"
+local EXTENSION_VERSION = "0.1.5"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
@@ -15,9 +15,9 @@ local QUICK_PREVIEW_DEFAULT_ZOOM = 0.55
 local QUICK_PREVIEW_MIN_ZOOM = 0.20
 local QUICK_PREVIEW_MAX_ZOOM = 2.00
 local QUICK_PREVIEW_ZOOM_STEP = 0.10
-local QUICK_PREVIEW_TIMER_INTERVAL = 0.10
-local QUICK_PREVIEW_LIVE_MAX_SCALE = 8
-local QUICK_PREVIEW_LIVE_MAX_PIXELS = 420000
+local QUICK_PREVIEW_TIMER_INTERVAL = 0.18
+local QUICK_PREVIEW_LIVE_MAX_SCALE = 6
+local QUICK_PREVIEW_LIVE_MAX_PIXELS = 260000
 
 local pluginRef = nil
 local quickPreviewDialog = nil
@@ -27,6 +27,8 @@ local quickPreviewTimer = nil
 local quickPreviewDirty = false
 local quickPreviewRendering = false
 local quickPreviewHighQuality = false
+local quickPreviewSprite = nil
+local quickPreviewSpriteChangeListener = nil
 local listeners = {}
 
 local pc = app.pixelColor
@@ -38,7 +40,7 @@ local PRESETS = {
     backgroundRed = 0.055,
     backgroundGreen = 0.062,
     backgroundBlue = 0.055,
-    saturation = 1.52,
+    saturation = 1.62,
     lumaBandwidth = 0.55,
     iBlur = 3.35,
     qBlur = 5.65,
@@ -48,7 +50,7 @@ local PRESETS = {
     phaseError = 0.26,
     hue = 0.07,
     signalNoise = 0.006,
-    chromaNoise = 0.010,
+    chromaNoise = 0.014,
     ghostStrength1 = 0.075,
     ghostOffset1 = 0.34,
     ghostStrength2 = 0.030,
@@ -60,27 +62,29 @@ local PRESETS = {
     subpixelApertureX = 0.86,
     subpixelApertureY = 0.94,
     activeThreshold = 0.028,
-    neighborBleed = 0.20,
+    neighborBleed = 0.24,
     matrixGlowResistance = 0.62,
     scanlineStrength = 0.40,
     scanlinePitch = 4.50,
     maskBrightness = 1.62,
-    redOffsetX = -0.85,
-    redOffsetY = -0.10,
-    blueOffsetX = 0.92,
-    blueOffsetY = 0.08,
-    smallGlow = 0.42,
-    largeGlow = 0.52,
-    halationStrength = 0.26,
-    bloomThreshold = 0.20,
-    whiteBloom = 0.78,
-    blueBloom = 0.92,
-    greenBloom = 0.92,
-    redBloom = 1.10,
+    redOffsetX = -1.35,
+    redOffsetY = -0.16,
+    blueOffsetX = 1.48,
+    blueOffsetY = 0.14,
+    rgbLeak = 0.92,
+    rgbLeakRadius = 1.70,
+    smallGlow = 0.62,
+    largeGlow = 0.68,
+    halationStrength = 0.30,
+    bloomThreshold = 0.18,
+    whiteBloom = 0.90,
+    blueBloom = 1.24,
+    greenBloom = 1.08,
+    redBloom = 0.84,
     contrast = 1.16,
     gamma = 1.05,
-    finalSaturation = 1.20,
-    temperature = 0.12,
+    finalSaturation = 1.24,
+    temperature = 0.06,
     blackFade = 0.18,
     blackWarmth = 0.72,
     backdropNoise = 0.18,
@@ -126,6 +130,8 @@ local PRESETS = {
     redOffsetY = -0.05,
     blueOffsetX = 0.76,
     blueOffsetY = 0.04,
+    rgbLeak = 0.28,
+    rgbLeakRadius = 1.15,
     smallGlow = 0.22,
     largeGlow = 0.36,
     halationStrength = 0.16,
@@ -183,14 +189,16 @@ local PRESETS = {
     redOffsetY = -0.10,
     blueOffsetX = 0.92,
     blueOffsetY = 0.08,
-    smallGlow = 0.58,
-    largeGlow = 0.46,
-    halationStrength = 0.26,
-    bloomThreshold = 0.20,
-    whiteBloom = 0.78,
-    blueBloom = 1.12,
-    greenBloom = 0.85,
-    redBloom = 0.80,
+    rgbLeak = 0.76,
+    rgbLeakRadius = 1.80,
+    smallGlow = 0.86,
+    largeGlow = 0.64,
+    halationStrength = 0.34,
+    bloomThreshold = 0.16,
+    whiteBloom = 0.88,
+    blueBloom = 1.26,
+    greenBloom = 0.96,
+    redBloom = 0.92,
     contrast = 1.16,
     gamma = 1.05,
     finalSaturation = 1.42,
@@ -996,53 +1004,32 @@ local function applyBackdropArtifactsPixel(r, g, b, screenX, screenY, preset)
   return r, g, b
 end
 
-local function renderLiveCrtImage(signalRows, width, height, scale, margin, preset)
-  local outWidth = (width * scale) + (margin * 2)
-  local outHeight = (height * scale) + (margin * 2)
-  local image = Image(outWidth, outHeight, ColorMode.RGB)
-  local matrixR, matrixG, matrixB = matrixColor(preset)
-
-  for y = 0, outHeight - 1 do
-    for x = 0, outWidth - 1 do
-      local r = matrixR
-      local g = matrixG
-      local b = matrixB
-      local sourceX = (x + 1.5 - margin) / scale
-      local sourceY = (y + 1.5 - margin) / scale
-
-      if sourceX >= 0 and sourceY >= 0 and sourceX < width and sourceY < height then
-        local cellX = math.floor(sourceX)
-        local cellY = math.floor(sourceY)
-        local localX = fract(sourceX)
-        local localY = fract(sourceY)
-        local sourceColor = sourceOrBackgroundSignal(signalRows, width, height, cellX, cellY, preset)
-        local above = aboveBackground(sourceColor, preset)
-        local sourceSignal = math.max(above.peak, above.l)
-        local active = smoothstep(preset.activeThreshold, preset.activeThreshold + 0.16, sourceSignal)
-
-        if active > 0.0 then
-          local aperture = cellMask(localX, localY, preset)
-          local brightness = saturate(sourceColor.l * 1.22)
-          local gain = 0.72 + brightness * 0.38
-          local beam = active * aperture * gain
-          local redMask, greenMask, blueMask = subpixelStripMask(localX, localY, preset)
-          local scan = scanlineOpen(y, brightness, preset)
-          local fill = beam * scan * 0.42
-          local glow = math.max(0.0, above.l - preset.bloomThreshold) * 0.52
-
-          r = r + sourceColor.r * beam * redMask * scan + sourceColor.r * fill + sourceColor.r * glow
-          g = g + sourceColor.g * beam * greenMask * scan + sourceColor.g * fill + sourceColor.g * glow
-          b = b + sourceColor.b * beam * blueMask * scan + sourceColor.b * fill + sourceColor.b * glow
-        end
-      end
-
-      r, g, b = gradePixel(r, g, b, x, y, outWidth, outHeight, preset)
-      r, g, b = applyBlackFadePixel(r, g, b, preset)
-      writeRgb(image, x, y, r, g, b)
-    end
+local function applyRgbLeakPixel(r, g, b, beamRows, glowRows, width, height, x, y, preset)
+  local amount = clamp(preset.rgbLeak, 0.0, 2.0)
+  if amount <= 0.0001 then
+    return r, g, b
   end
 
-  return image
+  local radius = math.max(0.15, tonumber(preset.rgbLeakRadius) or 1.25)
+  local center = sampleColorRows(beamRows, width, height, x, y)
+  local left = sampleColorRows(beamRows, width, height, x - radius, y - radius * 0.08)
+  local right = sampleColorRows(beamRows, width, height, x + radius, y + radius * 0.08)
+  local up = sampleColorRows(beamRows, width, height, x, y - radius)
+  local down = sampleColorRows(beamRows, width, height, x, y + radius)
+  local leftGlow = sampleColorRows(glowRows, width, height, x - radius * 1.45, y - radius * 0.14)
+  local rightGlow = sampleColorRows(glowRows, width, height, x + radius * 1.45, y + radius * 0.14)
+  local greenGlow = sampleColorRows(glowRows, width, height, x - radius * 0.18, y - radius * 0.55)
+
+  local horizontalEdge = math.abs(left.l - right.l)
+  local verticalEdge = math.abs(up.l - down.l)
+  local edge = smoothstep(0.035, 0.36, (horizontalEdge * 1.9) + (verticalEdge * 0.85))
+  local lit = smoothstep(0.08, 0.55, center.l + left.l + right.l)
+  local fringe = amount * (edge * 0.92 + lit * 0.025)
+
+  r = r + ((left.r * 0.18) + (leftGlow.r * 0.42)) * fringe
+  g = g + ((greenGlow.g * 0.18) + (math.min(left.g, right.g) * 0.06)) * fringe
+  b = b + ((right.b * 0.22) + (rightGlow.b * 0.50)) * fringe
+  return r, g, b
 end
 
 local function renderCrtImage(signalRows, width, height, scale, margin, preset)
@@ -1116,6 +1103,7 @@ local function renderCrtImage(signalRows, width, height, scale, margin, preset)
       g = g + large.g * halationStrength * 0.96 * halationMix
       b = b + large.b * halationStrength * halationMix
 
+      r, g, b = applyRgbLeakPixel(r, g, b, beamRows, largeBlur, outWidth, outHeight, x, y, preset)
       r, g, b = gradePixel(r, g, b, x, y, outWidth, outHeight, preset)
       r, g, b = applyBlackFadePixel(r, g, b, preset)
       r, g, b = applyBackdropArtifactsPixel(r, g, b, x, y, preset)
@@ -1241,8 +1229,8 @@ local function renderLivePreviewImageFromPreferences()
 
   local sourceRows = readSourceRows(sourceImage, preset)
   local signalRows = buildSignalRows(sourceRows, sourceImage.width, sourceImage.height, preset)
-  local crtImage = renderLiveCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
-  local status = "Live Fast | " .. preset.name .. " | " .. tostring(crtImage.width) .. "x" .. tostring(crtImage.height) .. " | scale " .. tostring(scale)
+  local crtImage = renderCrtImage(signalRows, sourceImage.width, sourceImage.height, scale, margin, preset)
+  local status = "Live CRT | " .. preset.name .. " | " .. tostring(crtImage.width) .. "x" .. tostring(crtImage.height) .. " | scale " .. tostring(scale)
   return crtImage, nil, status
 end
 
@@ -1421,7 +1409,7 @@ local function startQuickPreviewTimer()
 end
 
 local function markQuickPreviewDirty(reason)
-  if not quickPreviewDialog or quickPreviewRendering then
+  if not quickPreviewDialog then
     return
   end
 
@@ -1431,9 +1419,49 @@ local function markQuickPreviewDirty(reason)
   end
 
   quickPreviewDirty = true
+  if quickPreviewRendering then
+    return
+  end
+
   quickPreviewStatus = "Updating live CRT preview..."
   updateQuickPreviewDialogStatus(quickPreviewDialog)
   startQuickPreviewTimer()
+end
+
+local function detachQuickPreviewSpriteListener()
+  if quickPreviewSprite and quickPreviewSpriteChangeListener and quickPreviewSprite.events then
+    pcall(function()
+      quickPreviewSprite.events:off(quickPreviewSpriteChangeListener)
+    end)
+  end
+
+  quickPreviewSprite = nil
+  quickPreviewSpriteChangeListener = nil
+end
+
+local function attachQuickPreviewSpriteListener(sprite)
+  if quickPreviewSprite == sprite and quickPreviewSpriteChangeListener then
+    return
+  end
+
+  detachQuickPreviewSpriteListener()
+
+  if not sprite or not sprite.events then
+    return
+  end
+
+  quickPreviewSprite = sprite
+  quickPreviewSpriteChangeListener = sprite.events:on("change", function(ev)
+    markQuickPreviewDirty("sprite change")
+  end)
+end
+
+local function syncQuickPreviewSpriteListener()
+  if quickPreviewDialog and app.sprite then
+    attachQuickPreviewSpriteListener(app.sprite)
+  else
+    detachQuickPreviewSpriteListener()
+  end
 end
 
 local function setQuickPreviewZoom(value)
@@ -1474,6 +1502,7 @@ local function toggleQuickPreviewWindow()
     onclose = function()
       quickPreviewDialog = nil
       quickPreviewDirty = false
+      detachQuickPreviewSpriteListener()
       stopQuickPreviewTimer()
     end
   }
@@ -1548,7 +1577,7 @@ local function toggleQuickPreviewWindow()
 
   dlg:button {
     id = "refresh",
-    text = "Fast Refresh",
+    text = "Live Refresh",
     onclick = function()
       refreshQuickPreviewDialog(dlg, false)
     end
@@ -1593,6 +1622,7 @@ local function toggleQuickPreviewWindow()
   }
 
   quickPreviewDialog = dlg
+  syncQuickPreviewSpriteListener()
   startQuickPreviewTimer()
   dlg:show {
     wait = false,
@@ -1614,10 +1644,12 @@ local function quickRender()
 end
 
 local function onQuickPreviewSiteChange()
+  syncQuickPreviewSpriteListener()
   markQuickPreviewDirty("sitechange")
 end
 
 local function onQuickPreviewAfterCommand(ev)
+  syncQuickPreviewSpriteListener()
   markQuickPreviewDirty("aftercommand")
 end
 
@@ -1768,6 +1800,7 @@ function exit(plugin)
   end
 
   stopQuickPreviewTimer()
+  detachQuickPreviewSpriteListener()
   if quickPreviewDialog then
     pcall(function()
       quickPreviewDialog:close()

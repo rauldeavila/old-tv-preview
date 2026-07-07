@@ -2,7 +2,7 @@
   "name": "old-tv-preview",
   "displayName": "Old TV Preview",
   "description": "Render LIGHTWARD-style Old TV CRT previews from the active Aseprite sprite.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "author": {
     "name": "Rafael Araujo"
   },
