@@ -1,5 +1,8 @@
-local EXTENSION_VERSION = "0.1.6"
+local EXTENSION_VERSION = "0.2.0"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
+local OLD_TV_APP_PATH = "/Users/rajunior/dev/old-tv/dist/OldTV.app"
+local OLD_TV_BRIDGE_DIR = (os.getenv("HOME") or "") .. "/Library/Application Support/OldTV/AsepriteBridge"
+local OLD_TV_WS_URL = "ws://127.0.0.1:37171/aseprite"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12
 local DEFAULT_MARGIN = 14
@@ -18,8 +21,17 @@ local QUICK_PREVIEW_ZOOM_STEP = 0.10
 local QUICK_PREVIEW_TIMER_INTERVAL = 0.18
 local QUICK_PREVIEW_LIVE_MAX_SCALE = 6
 local QUICK_PREVIEW_LIVE_MAX_PIXELS = 260000
+local METAL_LIVE_TIMER_INTERVAL = 0.08
 
 local pluginRef = nil
+local metalLiveEnabled = false
+local metalLiveDirty = false
+local metalLiveTimer = nil
+local metalLiveSocket = nil
+local metalLiveSocketConnected = false
+local metalLiveSequence = 0
+local metalLiveSprite = nil
+local metalLiveSpriteChangeListener = nil
 local quickPreviewDialog = nil
 local quickPreviewImage = nil
 local quickPreviewStatus = ""
@@ -260,6 +272,39 @@ local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
+local function jsonEscape(value)
+  return tostring(value or "")
+    :gsub("\\", "\\\\")
+    :gsub('"', '\\"')
+    :gsub("\n", "\\n")
+    :gsub("\r", "\\r")
+    :gsub("\t", "\\t")
+end
+
+local function writeTextFile(path, text)
+  local handle = io.open(path, "wb")
+  if not handle then
+    return false
+  end
+
+  handle:write(text)
+  handle:close()
+  return true
+end
+
+local function ensureDirectory(path)
+  os.execute("mkdir -p " .. shellQuote(path))
+end
+
+local function fileExists(path)
+  local handle = io.open(path, "rb")
+  if handle then
+    handle:close()
+    return true
+  end
+  return false
+end
+
 local function readCommand(command)
   local handle = io.popen(command)
   if not handle then
@@ -320,6 +365,17 @@ end
 
 local function openFile(path)
   os.execute("open " .. shellQuote(path))
+end
+
+local function openOldTVApp()
+  if fileExists(OLD_TV_APP_PATH) then
+    os.execute("open " .. shellQuote(OLD_TV_APP_PATH))
+  else
+    app.alert {
+      title = "Old TV Preview",
+      text = "OldTV.app was not found at:\n" .. OLD_TV_APP_PATH .. "\n\nBuild it with scripts/build-app.sh in /Users/rajunior/dev/old-tv."
+    }
+  end
 end
 
 local function checkForUpdates()
@@ -505,6 +561,231 @@ local function captureSource(sprite, cropTransparentBounds)
   cropped:clear(pc.rgba(0, 0, 0, 0))
   cropped:drawImage(merged, Point(-bounds.x, -bounds.y))
   return cropped, bounds
+end
+
+local function metalLiveMetadataJson(image, sprite, sequence, pngPath)
+  local spriteName = "Aseprite Sprite"
+  if sprite then
+    spriteName = sprite.filename or sprite.name or spriteName
+    if spriteName == "" then
+      spriteName = sprite.name or "Aseprite Sprite"
+    end
+  end
+
+  local fields = {
+    '"protocolName":"oldtv-aseprite-frame-v1"',
+    '"sequence":' .. tostring(sequence),
+    '"spriteName":"' .. jsonEscape(spriteName) .. '"',
+    '"frameNumber":' .. tostring(activeFrameNumber()),
+    '"width":' .. tostring(image.width),
+    '"height":' .. tostring(image.height),
+    '"bytesPerPixel":' .. tostring(image.bytesPerPixel or 4),
+    '"rowStride":' .. tostring(image.rowStride or (image.width * 4)),
+    '"format":"rgba8"'
+  }
+
+  if pngPath then
+    fields[#fields + 1] = '"imagePath":"' .. jsonEscape(pngPath) .. '"'
+  end
+
+  return "{" .. table.concat(fields, ",") .. "}"
+end
+
+local function writeMetalLiveFallback(image, sprite, sequence)
+  ensureDirectory(OLD_TV_BRIDGE_DIR)
+  local pngPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "frame.png")
+  local tmpPngPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "frame.tmp.png")
+  local manifestPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "manifest.json")
+  local tmpManifestPath = app.fs.joinPath(OLD_TV_BRIDGE_DIR, "manifest.tmp.json")
+
+  local ok, err = pcall(function()
+    image:saveAs(tmpPngPath)
+  end)
+  if not ok then
+    return false, tostring(err)
+  end
+
+  os.remove(pngPath)
+  os.rename(tmpPngPath, pngPath)
+
+  local manifest = metalLiveMetadataJson(image, sprite, sequence, pngPath)
+  if not writeTextFile(tmpManifestPath, manifest) then
+    return false, "Could not write Aseprite bridge manifest."
+  end
+
+  os.remove(manifestPath)
+  os.rename(tmpManifestPath, manifestPath)
+  return true, nil
+end
+
+local function ensureMetalLiveSocket()
+  if metalLiveSocket or not WebSocket then
+    return
+  end
+
+  local ok, socket = pcall(function()
+    return WebSocket {
+      url = OLD_TV_WS_URL,
+      onopen = function(ws)
+        metalLiveSocketConnected = true
+        metalLiveDirty = true
+      end,
+      onclose = function(ws)
+        metalLiveSocketConnected = false
+        metalLiveSocket = nil
+      end,
+      onerror = function(ws, err)
+        metalLiveSocketConnected = false
+      end
+    }
+  end)
+
+  if ok and socket then
+    metalLiveSocket = socket
+    pcall(function()
+      metalLiveSocket:connect()
+    end)
+  end
+end
+
+local function sendMetalLiveFrame()
+  if not metalLiveEnabled or not app.sprite then
+    return
+  end
+
+  local sprite = app.sprite
+  local image = mergedCurrentFrame(sprite)
+  metalLiveSequence = metalLiveSequence + 1
+
+  local sentOverSocket = false
+  ensureMetalLiveSocket()
+  if metalLiveSocket and metalLiveSocketConnected then
+    local metadata = metalLiveMetadataJson(image, sprite, metalLiveSequence, nil)
+    local payload = metadata .. "\n" .. image.bytes
+    local ok = pcall(function()
+      metalLiveSocket:sendBinary(payload)
+    end)
+    sentOverSocket = ok == true
+    if not sentOverSocket then
+      metalLiveSocketConnected = false
+    end
+  end
+
+  if not sentOverSocket then
+    writeMetalLiveFallback(image, sprite, metalLiveSequence)
+  end
+end
+
+local function stopMetalLiveTimer()
+  if metalLiveTimer and metalLiveTimer.isRunning then
+    metalLiveTimer:stop()
+  end
+end
+
+local function startMetalLiveTimer()
+  if metalLiveTimer and metalLiveTimer.isRunning then
+    return
+  end
+
+  metalLiveTimer = Timer {
+    interval = METAL_LIVE_TIMER_INTERVAL,
+    ontick = function()
+      if not metalLiveEnabled then
+        stopMetalLiveTimer()
+        return
+      end
+
+      if metalLiveDirty then
+        metalLiveDirty = false
+        sendMetalLiveFrame()
+      end
+    end
+  }
+  metalLiveTimer:start()
+end
+
+local function markMetalLiveDirty(reason)
+  if not metalLiveEnabled then
+    return
+  end
+
+  metalLiveDirty = true
+  startMetalLiveTimer()
+end
+
+local function detachMetalLiveSpriteListener()
+  if metalLiveSprite and metalLiveSpriteChangeListener and metalLiveSprite.events then
+    pcall(function()
+      metalLiveSprite.events:off(metalLiveSpriteChangeListener)
+    end)
+  end
+
+  metalLiveSprite = nil
+  metalLiveSpriteChangeListener = nil
+end
+
+local function attachMetalLiveSpriteListener(sprite)
+  if metalLiveSprite == sprite and metalLiveSpriteChangeListener then
+    return
+  end
+
+  detachMetalLiveSpriteListener()
+
+  if not sprite or not sprite.events then
+    return
+  end
+
+  metalLiveSprite = sprite
+  metalLiveSpriteChangeListener = sprite.events:on("change", function(ev)
+    markMetalLiveDirty("sprite change")
+  end)
+end
+
+local function syncMetalLiveSpriteListener()
+  if metalLiveEnabled and app.sprite then
+    attachMetalLiveSpriteListener(app.sprite)
+  else
+    detachMetalLiveSpriteListener()
+  end
+end
+
+local function stopMetalLivePreview()
+  metalLiveEnabled = false
+  metalLiveDirty = false
+  stopMetalLiveTimer()
+  detachMetalLiveSpriteListener()
+  if metalLiveSocket then
+    pcall(function()
+      metalLiveSocket:close()
+    end)
+  end
+  metalLiveSocket = nil
+  metalLiveSocketConnected = false
+end
+
+local function startMetalLivePreview()
+  if not app.sprite then
+    app.alert {
+      title = "Old TV Preview",
+      text = "Open a sprite before starting the Old TV Metal live preview."
+    }
+    return
+  end
+
+  metalLiveEnabled = true
+  openOldTVApp()
+  ensureMetalLiveSocket()
+  syncMetalLiveSpriteListener()
+  markMetalLiveDirty("start")
+  sendMetalLiveFrame()
+end
+
+local function toggleMetalLivePreview()
+  if metalLiveEnabled then
+    stopMetalLivePreview()
+  else
+    startMetalLivePreview()
+  end
 end
 
 local function luminance(r, g, b)
@@ -1645,12 +1926,16 @@ end
 
 local function onQuickPreviewSiteChange()
   syncQuickPreviewSpriteListener()
+  syncMetalLiveSpriteListener()
   markQuickPreviewDirty("sitechange")
+  markMetalLiveDirty("sitechange")
 end
 
 local function onQuickPreviewAfterCommand(ev)
   syncQuickPreviewSpriteListener()
+  syncMetalLiveSpriteListener()
   markQuickPreviewDirty("aftercommand")
+  markMetalLiveDirty("aftercommand")
 end
 
 function showRenderDialog()
@@ -1754,8 +2039,21 @@ function init(plugin)
   }
 
   plugin:newCommand {
+    id = "OldTvPreviewMetalLive",
+    title = "Old TV Preview: Metal Live Preview",
+    group = "view_controls",
+    onclick = toggleMetalLivePreview,
+    onenabled = function()
+      return app.isUIAvailable and app.sprite ~= nil
+    end,
+    onchecked = function()
+      return metalLiveEnabled
+    end
+  }
+
+  plugin:newCommand {
     id = "OldTvPreviewQuickPreview",
-    title = "Old TV Preview: CRT Preview Window",
+    title = "Old TV Preview: Lua CRT Preview Window",
     group = "view_controls",
     onclick = toggleQuickPreviewWindow,
     onenabled = function()
@@ -1800,6 +2098,7 @@ function exit(plugin)
   end
 
   stopQuickPreviewTimer()
+  stopMetalLivePreview()
   detachQuickPreviewSpriteListener()
   if quickPreviewDialog then
     pcall(function()
@@ -1856,6 +2155,34 @@ local function runCliSmokeTest()
   end
 end
 
+local function runMetalBridgeSmokeTest()
+  local input = app.params.input
+  if input and input ~= "" then
+    app.open(input)
+  end
+
+  if not app.sprite then
+    local sprite = Sprite(4, 4, ColorMode.RGB)
+    local image = Image(4, 4, ColorMode.RGB)
+    image:clear(pc.rgba(0, 0, 0, 0))
+    image:drawPixel(0, 0, pc.rgba(255, 0, 0, 255))
+    image:drawPixel(1, 0, pc.rgba(0, 255, 0, 255))
+    image:drawPixel(0, 1, pc.rgba(0, 0, 255, 255))
+    image:drawPixel(1, 1, pc.rgba(255, 255, 255, 255))
+    sprite.cels[1].image = image
+    app.sprite = sprite
+  end
+
+  local image = mergedCurrentFrame(app.sprite)
+  local sequence = tonumber(app.params.sequence) or 12001
+  local ok, err = writeMetalLiveFallback(image, app.sprite, sequence)
+  if not ok then
+    error(err or "Could not write Old TV Metal bridge smoke frame.")
+  end
+end
+
 if app.params and (app.params["old-tv-preview-smoke"] == "1" or app.params.old_tv_preview_smoke == "1") then
   runCliSmokeTest()
+elseif app.params and (app.params["old-tv-preview-metal-smoke"] == "1" or app.params.old_tv_preview_metal_smoke == "1") then
+  runMetalBridgeSmokeTest()
 end

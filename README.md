@@ -1,22 +1,32 @@
 # Old TV Preview
 
-Aseprite extension that renders a static LIGHTWARD-style Old TV CRT preview from the active sprite/frame.
+Aseprite extension that bridges the active sprite/frame to the Metal Old TV app and can still render a static LIGHTWARD-style Lua preview for fallback checks.
 
-This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview sprite so the original art remains untouched.
+The main live workflow uses `/Users/rajunior/dev/old-tv/dist/OldTV.app` for the real Metal shader. The Lua renderer is kept as a fallback/manual render path so the original art remains untouched.
 
 ## Features
 
-- Render the active frame through an Old TV CRT approximation.
+- Send unsaved Aseprite brush/eraser edits to `OldTV.app` for Metal live preview.
+- Uses WebSocket for live frames and a temp PNG manifest fallback in `~/Library/Application Support/OldTV/AsepriteBridge`.
+- Opens/focuses the Metal app from Aseprite with F1.
+- Render the active frame through a Lua Old TV CRT approximation when needed.
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
 - Includes `Reference Match` and `Color Leak` preset variants.
 - Optional side-by-side comparison with nearest-neighbor raw upscale.
-- F1 CRT preview window that draws the filtered image without creating a new sprite, leaving Aseprite's native F7 preview intact.
+- F1 Metal live preview bridge, leaving Aseprite's native F7 preview intact.
 - Auto-refreshes the CRT preview window after sprite edits, frame changes, undo/redo, and other Aseprite commands.
 - Display zoom controls for keeping the CRT preview small in a corner or expanding it.
 - Live CRT preview uses the same Old TV glow/mask/bloom pipeline at a reduced scale, with `HQ Once` for full-scale checks.
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.2.0
+
+- Added `Old TV Preview: Metal Live Preview`.
+- F1 now opens/focuses `OldTV.app` and streams the current unsaved Aseprite frame to it.
+- Added WebSocket transport with temp PNG fallback for the Metal app.
+- Kept the Lua CRT preview as `Old TV Preview: Lua CRT Preview Window` without the default F1 shortcut.
 
 ## Version 0.1.6
 
@@ -59,14 +69,15 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 After installing and restarting Aseprite:
 
 - `View > Old TV Preview: Render...`
-- `View > Old TV Preview: CRT Preview Window`
+- `View > Old TV Preview: Metal Live Preview`
+- `View > Old TV Preview: Lua CRT Preview Window`
 - `View > Old TV Preview: Quick Render`
 - `View > Old TV Preview: Check for Updates...`
 
 Default shortcuts:
 
 - Aseprite native Preview: `F7`
-- CRT Preview Window: `F1`
+- Metal Live Preview: `F1`
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
@@ -119,7 +130,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.6
+git tag v0.2.0
 git push origin main --tags
 ```
 
