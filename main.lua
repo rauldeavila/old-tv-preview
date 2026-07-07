@@ -1,4 +1,4 @@
-local EXTENSION_VERSION = "0.1.5"
+local EXTENSION_VERSION = "0.1.6"
 local RELEASE_REPO = "rauldeavila/old-tv-preview"
 local DEFAULT_PRESET_ID = "july_teste_01"
 local DEFAULT_SCALE = 12

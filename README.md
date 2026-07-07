@@ -10,13 +10,18 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 - Uses the LIGHTWARD `july_teste_01` preset as the default.
 - Includes `Reference Match` and `Color Leak` preset variants.
 - Optional side-by-side comparison with nearest-neighbor raw upscale.
-- F7 CRT preview window that draws the filtered image without creating a new sprite.
+- F1 CRT preview window that draws the filtered image without creating a new sprite, leaving Aseprite's native F7 preview intact.
 - Auto-refreshes the CRT preview window after sprite edits, frame changes, undo/redo, and other Aseprite commands.
 - Display zoom controls for keeping the CRT preview small in a corner or expanding it.
 - Live CRT preview uses the same Old TV glow/mask/bloom pipeline at a reduced scale, with `HQ Once` for full-scale checks.
 - Crop transparent bounds or preview the full canvas.
 - Preserves settings between Aseprite sessions.
 - Checks GitHub Releases for updates from inside Aseprite.
+
+## Version 0.1.6
+
+- Restored Aseprite's native `F7` preview shortcut.
+- Moved `Old TV Preview: CRT Preview Window` to `F1`, which is not mapped by this Aseprite install's default function-key shortcuts.
 
 ## Version 0.1.5
 
@@ -40,7 +45,7 @@ This is a CPU/Lua preview tool, not a live GPU shader. It creates a new preview 
 ## Version 0.1.2
 
 - Added `Old TV Preview: CRT Preview Window`.
-- Bound F7 to the CRT preview window, replacing the native Preview shortcut when the extension keymap is active.
+- Initially bound F7 to the CRT preview window. As of 0.1.6, F7 is restored to Aseprite's native Preview and Old TV uses F1.
 - The preview window uses Aseprite's Lua canvas API, because extensions cannot replace the native Preview window render pipeline directly.
 
 ## Version 0.1.1
@@ -58,9 +63,10 @@ After installing and restarting Aseprite:
 - `View > Old TV Preview: Quick Render`
 - `View > Old TV Preview: Check for Updates...`
 
-Default shortcut:
+Default shortcuts:
 
-- CRT Preview Window: `F7`
+- Aseprite native Preview: `F7`
+- CRT Preview Window: `F1`
 - macOS: `Cmd+Alt+V`
 - Other platforms: `Ctrl+Alt+V`
 
@@ -113,7 +119,7 @@ dist/old-tv-preview.aseprite-extension
 ## Release
 
 ```sh
-git tag v0.1.5
+git tag v0.1.6
 git push origin main --tags
 ```
 
